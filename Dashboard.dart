@@ -1389,10 +1389,9 @@ class _DashboardState extends ConsumerState<Dashboard> {
   bool showOutletStatsTable = true; // in your _DashboardState
 
   Widget _buildOutletwiseStatisticsTable(BuildContext context, {required bool isMobile}) {
-    // --- Build outlets data as before ---
     final outlets = <Map<String, String>>[];
 
-    // Calculate totals
+    // Calculate totals by summing all outlets
     num totalOrders = 0;
     num totalSales = 0;
     num totalNetSales = 0;
@@ -1404,23 +1403,49 @@ class _DashboardState extends ConsumerState<Dashboard> {
     num totalRoundOff = 0;
     num totalCharges = 0;
 
-    // Iterate over all outlets to sum up the totals
+    // Prepare per-outlet rows
     widget.dbToBrandMap.forEach((dbKey, outletName) {
       final report = totalSalesResponses[dbKey];
-      totalOrders += num.tryParse(report?.getField("occupiedTableCount", fallback: "0") ?? "0") ?? 0;
-      totalSales += num.tryParse(report?.getField("grandTotal", fallback: "0.00") ?? "0.00") ?? 0;
-      totalNetSales += num.tryParse(report?.getField("netTotal", fallback: "0.00") ?? "0.00") ?? 0;
-      totalTax += num.tryParse(report?.getField("billTax", fallback: "0.00") ?? "0.00") ?? 0;
-      totalDiscount += num.tryParse(report?.getField("billDiscount", fallback: "0.00") ?? "0.00") ?? 0;
-      totalModified += num.tryParse(report?.getField("modifiedCount", fallback: "0") ?? "0") ?? 0;
-      totalReprinted += num.tryParse(report?.getField("reprintCount", fallback: "0") ?? "0") ?? 0;
-      totalWaivedOff += num.tryParse(report?.getField("waivedOff", fallback: "0.00") ?? "0.00") ?? 0;
-      totalRoundOff += num.tryParse(report?.getField("roundOff", fallback: "0.00") ?? "0.00") ?? 0;
-      totalCharges += num.tryParse(report?.getField("charges", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletOrders = num.tryParse(report?.getField("occupiedTableCount", fallback: "0") ?? "0") ?? 0;
+      final outletSales = num.tryParse(report?.getField("grandTotal", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletNetSales = num.tryParse(report?.getField("netTotal", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletTax = num.tryParse(report?.getField("billTax", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletDiscount = num.tryParse(report?.getField("billDiscount", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletModified = num.tryParse(report?.getField("modifiedCount", fallback: "0") ?? "0") ?? 0;
+      final outletReprinted = num.tryParse(report?.getField("reprintCount", fallback: "0") ?? "0") ?? 0;
+      final outletWaivedOff = num.tryParse(report?.getField("waivedOff", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletRoundOff = num.tryParse(report?.getField("roundOff", fallback: "0.00") ?? "0.00") ?? 0;
+      final outletCharges = num.tryParse(report?.getField("charges", fallback: "0.00") ?? "0.00") ?? 0;
+
+      totalOrders += outletOrders;
+      totalSales += outletSales;
+      totalNetSales += outletNetSales;
+      totalTax += outletTax;
+      totalDiscount += outletDiscount;
+      totalModified += outletModified;
+      totalReprinted += outletReprinted;
+      totalWaivedOff += outletWaivedOff;
+      totalRoundOff += outletRoundOff;
+      totalCharges += outletCharges;
+
+      outlets.add({
+        "Outlet Name": outletName,
+        "Orders": outletOrders.toStringAsFixed(0),
+        "Sales": outletSales.toStringAsFixed(2),
+        "Net Sales": outletNetSales.toStringAsFixed(2),
+        "Tax": outletTax.toStringAsFixed(2),
+        "Discount": outletDiscount.toStringAsFixed(2),
+        "Modified": outletModified.toStringAsFixed(0),
+        "Re-Printed": outletReprinted.toStringAsFixed(0),
+        "Waived Off": outletWaivedOff.toStringAsFixed(2),
+        "Round Off": outletRoundOff.toStringAsFixed(2),
+        "Charges": outletCharges.toStringAsFixed(2),
+        "": "",
+      });
     });
 
-    // Add "Total" row first
-    outlets.add({
+    // Add "Total" row FIRST
+    outlets.insert(0, {
       "Outlet Name": "Total",
       "Orders": totalOrders.toStringAsFixed(0),
       "Sales": totalSales.toStringAsFixed(2),
@@ -1432,40 +1457,9 @@ class _DashboardState extends ConsumerState<Dashboard> {
       "Waived Off": totalWaivedOff.toStringAsFixed(2),
       "Round Off": totalRoundOff.toStringAsFixed(2),
       "Charges": totalCharges.toStringAsFixed(2),
-      "": "", // for menu column
+      "": "",
     });
 
-    // Individual outlets
-    widget.dbToBrandMap.forEach((dbKey, outletName) {
-      final report = totalSalesResponses[dbKey];
-      final outletOrders = report?.getField("occupiedTableCount", fallback: "0") ?? "0";
-      final outletSales = report?.getField("grandTotal", fallback: "0.00") ?? "0.00";
-      final outletNetSales = report?.getField("netTotal", fallback: "0.00") ?? "0.00";
-      final outletTax = report?.getField("billTax", fallback: "0.00") ?? "0.00";
-      final outletDiscount = report?.getField("billDiscount", fallback: "0.00") ?? "0.00";
-      final outletModified = report?.getField("modifiedCount", fallback: "0") ?? "0";
-      final outletReprinted = report?.getField("reprintCount", fallback: "0") ?? "0";
-      final outletWaivedOff = report?.getField("waivedOff", fallback: "0.00") ?? "0.00";
-      final outletRoundOff = report?.getField("roundOff", fallback: "0.00") ?? "0.00";
-      final outletCharges = report?.getField("charges", fallback: "0.00") ?? "0.00";
-
-      outlets.add({
-        "Outlet Name": outletName,
-        "Orders": outletOrders,
-        "Sales": outletSales,
-        "Net Sales": outletNetSales,
-        "Tax": outletTax,
-        "Discount": outletDiscount,
-        "Modified": outletModified,
-        "Re-Printed": outletReprinted,
-        "Waived Off": outletWaivedOff,
-        "Round Off": outletRoundOff,
-        "Charges": outletCharges,
-        "": "",
-      });
-    });
-
-    // --- Table columns order to match screenshot ---
     final columns = [
       "Outlet Name",
       "Orders",
@@ -1521,7 +1515,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
               child: ConstrainedBox(
                 constraints: BoxConstraints(minWidth: isMobile ? 800 : 1050),
                 child: DataTable(
-                  headingRowColor: MaterialStateProperty.all(const Color(0xFFEAF3FF)), // solid blue header
+                  headingRowColor: MaterialStateProperty.all(const Color(0xFFEAF3FF)),
                   columnSpacing: isMobile ? 12 : 20,
                   headingRowHeight: isMobile ? 38 : 44,
                   dataRowHeight: isMobile ? 38 : 48,
@@ -1603,6 +1597,8 @@ class _DashboardState extends ConsumerState<Dashboard> {
       ),
     );
   }
+
+
 }
 
 class _SalesBarChartWidget extends StatelessWidget {
