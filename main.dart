@@ -111,30 +111,64 @@ class UserData {
   }
 
   static Future<Map<String, TotalSalesReport>> fetchTotalSalesForDbs(
-      Config config, List<String> dbNames, String startDate, String endDate)
-  async {
+      Config config, List<String> dbNames, String startDate, String endDate
+      ) async {
     final Map<String, TotalSalesReport> dbToTotalSalesMap = {};
 
-    for (final db in dbNames) {
-      final url =
-          "${config.apiUrl}report/totalsale?startDate=$startDate&endDate=$endDate&DB=$db";
-      print("🔗 Requesting total sales from: $url");
+    // Build query string for DB parameters
+    final dbParams = dbNames.map((db) => "DB=$db").join("&");
+    final url = "${config.apiUrl}report/totalsale?startDate=$startDate&endDate=$endDate&$dbParams";
+    print("🔗 Requesting total sales from: $url");
 
-      try {
-        final response = await http.get(Uri.parse(url));
-        print("📡 Status for total sales DB '$db': ${response.statusCode}");
+    try {
+      final response = await http.get(Uri.parse(url));
+      print("📡 Status for total sales: ${response.statusCode}");
 
-        if (response.statusCode == 200) {
-          final decoded = json.decode(response.body);
-          if (decoded is Map<String, dynamic>) {
-            final report = TotalSalesReport.fromJson(decoded);
-            dbToTotalSalesMap[db] = report;
-          } else {
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+
+        // Case 1: API returns a map-of-dbName-to-report for multiple DBs
+        if (decoded is Map<String, dynamic> && dbNames.length > 1) {
+          // Heuristic: if all top-level values are Map, treat as per-DB
+          int mapCount = 0;
+          decoded.forEach((k, v) {
+            if (v is Map<String, dynamic>) mapCount++;
+          });
+          // If majority are maps, treat as per-DB
+          if (mapCount >= decoded.length / 2) {
+            decoded.forEach((db, reportJson) {
+              if (reportJson is Map<String, dynamic>) {
+                dbToTotalSalesMap[db] = TotalSalesReport.fromJson(reportJson);
+              } else {
+                print("❗ Skipping db '$db' - not a Map: $reportJson");
+              }
+            });
           }
-        } else {
+          // Otherwise, treat as combined total (API may return flat map for ALL)
+          else {
+            dbToTotalSalesMap["ALL"] = TotalSalesReport.fromJson(decoded);
+          }
         }
-      } catch (e) {
+        // Case 2: API returns a list of per-DB maps
+        else if (decoded is List) {
+          for (var reportJson in decoded) {
+            if (reportJson is Map<String, dynamic> && reportJson.containsKey('dbName')) {
+              dbToTotalSalesMap[reportJson['dbName']] = TotalSalesReport.fromJson(reportJson);
+            }
+          }
+        }
+        // Case 3: API returns a flat map (single DB, or combined total)
+        else if (decoded is Map<String, dynamic>) {
+          String dbKey = dbNames.length == 1 ? dbNames.first : "ALL";
+          dbToTotalSalesMap[dbKey] = TotalSalesReport.fromJson(decoded);
+        }
+        // Any other format
+        else {
+          print("❗ Unexpected decoded type: ${decoded.runtimeType} - $decoded");
+        }
       }
+    } catch (e) {
+      print("🔥 Exception while fetching total sales: $e");
     }
 
     return dbToTotalSalesMap;
