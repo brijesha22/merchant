@@ -426,7 +426,7 @@ class _DashboardState extends ConsumerState<Dashboard> {
               children: [
                 Image.asset(
                   'assets/images/reddpos.png',
-                  height: isMobile ? 32 : 40,
+                  height: isMobile ? 50 : 50,
                 ),
                 const SizedBox(width: 10),
                 Container(
