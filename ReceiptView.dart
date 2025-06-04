@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_mosambee_aar/flutter_mosambee_aar.dart';
 import 'package:flutter_sample/main_menu_desk.dart';
 import 'package:flutter_sample/product_model.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -63,7 +65,7 @@ class ReceiptView extends StatelessWidget {
     final homeDeliveryCharge = double.tryParse(homeDeliveryChargeString) ?? 0.0;
 
     List<LocalTax> billTaxes = List<LocalTax>.from(arguments['taxes'] ?? []);
-    gReceiptViewTaxes = billTaxes; // Define this as a global list
+    gReceiptViewTaxes = billTaxes;
 
 
     return Scaffold(
@@ -102,7 +104,7 @@ class MainPageState extends State<MainPage> {
   WidgetsToImageController controller = WidgetsToImageController();
   Uint8List? bytes;
   TextEditingController phoneNumberController = TextEditingController();
-  bool showContainer = false;
+  bool showContainer = true;
   final GlobalKey _receiptKey = GlobalKey();
 
   @override
@@ -150,11 +152,9 @@ class MainPageState extends State<MainPage> {
           print("Error: ByteData is null after capturing the image.");
         }
 
-        // ✅ Determine screen orientation
         final size = MediaQuery.of(context).size;
         final isPortrait = size.height > size.width;
 
-        // ✅ Navigate based on orientation
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
@@ -221,8 +221,6 @@ class MainPageState extends State<MainPage> {
 
   late Future<List<OrderModifier>> futureModifiers;
 
-
-
   bool _isLoading = true;
 
   String deviceName = 'Unknown';
@@ -232,7 +230,7 @@ class MainPageState extends State<MainPage> {
   List<BillItem> allbillitemslocal = [];
   List<SelectedProductModifier> allbillmodifers = [];
   List<LocalTax> allbilltaxes = [];
-  String custname = '', custmobile = '', custgst = '',CustomerAddress ='';
+  String custname = '', custmobile = '', custgst = '',customerAddress ='';
   double homeDeliveryCharge = 0.0;
   String deliveryRemark = "";
   double cgst = 0.00;
@@ -261,6 +259,279 @@ class MainPageState extends State<MainPage> {
 
   List<dynamic> combinedItems=[];
   List<dynamic> combinedModiferItem=[];
+
+
+  String getDisplayName(List<Product> productList, String productCode) {
+    try {
+      return productList
+          .firstWhere((p) => p.productCode.toString() == productCode)
+          .displayName ??
+          '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+
+  Future<void> testBILLMosambee({
+    required String billNo,
+    required List<dynamic> combinedItems,
+    required List<dynamic> combinedModiferItem,
+    required List<Product> productList,
+    required List<LocalTax> localtaxes,
+    required double subtotal,
+    required double discount,
+    required double discountPercentage,
+    required String discountRemark,
+    required double billAmount,
+    required double grandTotal,
+    required int pax,
+    required String tableNo,
+    required String settlementModeName,
+    required Uint8List logoBytes,
+    required int finalQuantity,
+    required String footer,
+    required String custname,
+    required String custmobile,
+    required String custgst,
+    required String customerAddress,
+    required String Lastclickedmodule,
+    required String username,
+    required bool isDuplicate,
+  })
+  async {
+    try {
+      FlutterMosambeeAar.openPrinter();
+      int? state = await FlutterMosambeeAar.getPrinterState();
+
+      FlutterMosambeeAar.setPrintFont("/system/fonts/Android-1.ttf");
+      FlutterMosambeeAar.setPrintGray(2000);
+      FlutterMosambeeAar.setLineSpace(0); // For compactness
+
+
+      // Logo
+      try {
+        if (logoBytes.isNotEmpty) {
+          final decoded = img.decodeImage(logoBytes);
+          if (decoded != null) {
+            final resizedLogo = img.copyResize(decoded, width: 200);
+            final logoPng = Uint8List.fromList(img.encodePng(resizedLogo));
+            final base64Logo = base64.encode(logoPng);
+            FlutterMosambeeAar.printImage(base64Logo, FlutterMosambeeAar.PRINTLINE_CENTER);
+          }
+        }
+      } catch (e) {
+        print("[MOSAMBEE] Error printing logo: $e");
+      }
+
+      FlutterMosambeeAar.printText4(brandName, FlutterMosambeeAar.PRINTLINE_CENTER, 34, true);
+      FlutterMosambeeAar.printText2(Addresslineone, FlutterMosambeeAar.PRINTLINE_CENTER);
+      FlutterMosambeeAar.printText2(Addresslinetwo, FlutterMosambeeAar.PRINTLINE_CENTER);
+      FlutterMosambeeAar.printText2(Addresslinethree, FlutterMosambeeAar.PRINTLINE_CENTER);
+      FlutterMosambeeAar.printText2('Mobile No: $brandmobile', FlutterMosambeeAar.PRINTLINE_CENTER);
+      FlutterMosambeeAar.printText2('Email ID: $emailid', FlutterMosambeeAar.PRINTLINE_CENTER);
+
+      FlutterMosambeeAar.printText2("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ", FlutterMosambeeAar.PRINTLINE_CENTER);
+      FlutterMosambeeAar.printText2(
+        gReciptViewStrings['orderType'] == 'Dine'
+            ? 'Dine In'
+            : gReciptViewStrings['orderType'] ?? '',
+        FlutterMosambeeAar.PRINTLINE_CENTER,
+      );
+
+      bool hasCustomerInfo = (gReciptViewStrings['custname']?.toString().isNotEmpty ?? false) ||
+          (gReciptViewStrings['custmobile']?.toString().isNotEmpty ?? false) ||
+          (gReciptViewStrings['custgst']?.toString().isNotEmpty ?? false) ||
+          (gReciptViewStrings['customerAddress']?.toString().isNotEmpty ?? false);
+
+      if (hasCustomerInfo) {
+        FlutterMosambeeAar.printText2("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ", FlutterMosambeeAar.PRINTLINE_CENTER);
+
+        if (gReciptViewStrings['custname']?.toString().isNotEmpty ?? false)
+          FlutterMosambeeAar.printText2('Guest Name: ${gReciptViewStrings['custname']}', FlutterMosambeeAar.PRINTLINE_LEFT);
+
+        if (gReciptViewStrings['custmobile']?.toString().isNotEmpty ?? false)
+          FlutterMosambeeAar.printText2('Mobile No: ${gReciptViewStrings['custmobile']}', FlutterMosambeeAar.PRINTLINE_LEFT);
+
+        if (gReciptViewStrings['custgst']?.toString().isNotEmpty ?? false)
+          FlutterMosambeeAar.printText2('GSTIN: ${gReciptViewStrings['custgst']}', FlutterMosambeeAar.PRINTLINE_LEFT);
+
+        if (gReciptViewStrings['customerAddress']?.toString().isNotEmpty ?? false)
+          FlutterMosambeeAar.printText2('Address: ${gReciptViewStrings['customerAddress']}', FlutterMosambeeAar.PRINTLINE_LEFT);
+      }
+
+      FlutterMosambeeAar.printText2("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ", FlutterMosambeeAar.PRINTLINE_CENTER);
+
+      FlutterMosambeeAar.printText2('Bill No: $billNo', FlutterMosambeeAar.PRINTLINE_LEFT);
+      final orderType = gReciptViewStrings['orderType'];
+      final pax = gReciptViewStrings['pax'] ?? '';
+      final tableNo = gReciptViewStrings['tableName'] ?? '';
+
+      if (orderType == 'Dine' && pax.toString().trim().isNotEmpty) {
+        FlutterMosambeeAar.printText2('PAX: $pax', FlutterMosambeeAar.PRINTLINE_LEFT);
+      }
+
+// Print Table No only if orderType is 'Dine' or 'Online' and tableNo is not empty
+      if ((orderType == 'Dine' || orderType == 'Online') && tableNo.toString().trim().isNotEmpty) {
+        FlutterMosambeeAar.printText2('Table No: $tableNo', FlutterMosambeeAar.PRINTLINE_LEFT);
+      }
+
+
+
+
+      final waiterRaw = gReciptViewStrings['waiter'];
+      final waiter = waiterRaw != null ? waiterRaw.toString().trim() : '';
+
+      if (orderType == 'Dine' && waiter.isNotEmpty) {
+        FlutterMosambeeAar.printText2('Waiter: $waiter', FlutterMosambeeAar.PRINTLINE_LEFT);
+      }
+
+
+      // Date & Time (custom formatting as in your UI)
+      final billTimeRaw = gReciptViewStrings['billTime'] ?? '';
+      final posDateRaw = gReciptViewStrings['DNT'] ?? '';  // <-- Correct key here
+
+      String formattedDate = '';
+      String formattedTime = '';
+
+      if (posDateRaw.isNotEmpty) {
+        try {
+          final parsedPosDate = DateTime.parse(posDateRaw);
+          formattedDate = DateFormat('dd-MM-yyyy').format(parsedPosDate);
+        } catch (e) {
+          formattedDate = posDateRaw; // fallback
+        }
+      }
+
+      if (billTimeRaw.isNotEmpty) {
+        try {
+          final parsedBillTime = DateTime.parse(billTimeRaw).toLocal();
+          formattedTime = DateFormat('hh:mm a').format(parsedBillTime);
+        } catch (e) {
+          formattedTime = billTimeRaw; // fallback
+        }
+      }
+
+      final displayDateTime = (formattedDate + (formattedTime.isNotEmpty ? ' $formattedTime' : '')).trim();
+
+      FlutterMosambeeAar.printText2('Date & Time: $displayDateTime', FlutterMosambeeAar.PRINTLINE_LEFT);
+
+      FlutterMosambeeAar.printText2('Bill By: $username', FlutterMosambeeAar.PRINTLINE_LEFT);
+
+      FlutterMosambeeAar.printText2("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ", FlutterMosambeeAar.PRINTLINE_CENTER);
+
+      // HEADER: Item Name | Qty x Price | Amount
+      FlutterMosambeeAar.printList("Item Name", "                   Qty   Rate", "   Amount", 21, true);
+      FlutterMosambeeAar.printText2("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ", FlutterMosambeeAar.PRINTLINE_CENTER);
+
+      for (final itemData in combinedItems) {
+        final BillItem billItem = itemData['item'];
+        final int combinedQty = itemData['quantity'];
+        final double combinedPrice = itemData['price'];
+        final double combinedTotal = itemData['totalPrice'] ?? (combinedQty * combinedPrice);
+
+
+        List<String> nameLines = wrapText(billItem.itemName, 19);
+
+
+        FlutterMosambeeAar.printList(
+          nameLines[0],
+          "                        $combinedQty     ${combinedPrice.toStringAsFixed(2)}",
+              combinedTotal.toStringAsFixed(2),
+          19,
+          false,
+        );
+        for (int i = 1; i < nameLines.length; i++) {
+          FlutterMosambeeAar.printList(nameLines[i], "", "", 20, false);
+        }
+
+        final itemModifiers = combinedModiferItem.where(
+              (modi) => modi['product_code'].toString() == billItem.productCode,
+        );
+        for (final modi in itemModifiers) {
+          num tamount = (modi['price_per_unit'] as num) * (modi['quantity'] as num);
+          String modName = modi['price_per_unit'] > 0 ? '>>    ${modi['name']}' : '> ${modi['name']}';
+          List<String> modLines = wrapText(modName, 20);
+          FlutterMosambeeAar.printList(
+            modLines[0],
+            "                      ${modi['quantity']}       ${(modi['price_per_unit'] as num).toStringAsFixed(2)}",
+            tamount.toStringAsFixed(2),
+            19,
+            false,
+          );
+          for (int i = 1; i < modLines.length; i++) {
+            FlutterMosambeeAar.printList(modLines[i], "", "", 17, false);
+          }
+        }
+      }
+
+      FlutterMosambeeAar.printText2("_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ", FlutterMosambeeAar.PRINTLINE_CENTER);
+
+      FlutterMosambeeAar.printList("Sub Total", "x$finalQuantity", subtotal.toStringAsFixed(2), 18, false);
+
+      if (discount > 0.0) {
+        FlutterMosambeeAar.printList(
+          'Discount ${discountPercentage.toStringAsFixed(0)}%',
+          "",
+          discount.toStringAsFixed(2),
+          18,
+          false,
+        );
+        if (discountRemark.isNotEmpty) {
+          FlutterMosambeeAar.printText2('Remark: $discountRemark', FlutterMosambeeAar.PRINTLINE_LEFT);
+        }
+        FlutterMosambeeAar.printList("Bill Amount", "", billAmount.toStringAsFixed(2), 18, false);
+      }
+
+      for (final tax in localtaxes) {
+        if (tax.amount > 0.0) {
+          FlutterMosambeeAar.printList(
+            "${tax.name} (${tax.percent}%)",
+            "",
+            tax.amount.toStringAsFixed(2),
+            18,
+            false,
+          );
+        }
+      }
+
+      String formattedTotal = grandTotal.toStringAsFixed(2);
+      FlutterMosambeeAar.printList("Grand Total", "", formattedTotal, 20, true);
+
+      FlutterMosambeeAar.printText2('Paid By: $settlementModeName', FlutterMosambeeAar.PRINTLINE_LEFT);
+
+      FlutterMosambeeAar.printText2('VAT No: xxxxxxxxxxxx', FlutterMosambeeAar.PRINTLINE_LEFT);
+      FlutterMosambeeAar.printText2('CR No: xxxxxxxxxx', FlutterMosambeeAar.PRINTLINE_LEFT);
+      FlutterMosambeeAar.printText2(footer, FlutterMosambeeAar.PRINTLINE_CENTER);
+
+      FlutterMosambeeAar.printText1("");
+      FlutterMosambeeAar.printText1("");
+      FlutterMosambeeAar.printText1("");
+      FlutterMosambeeAar.printText1("");
+
+      if (state != null && state == 4) {
+        FlutterMosambeeAar.closePrinter();
+        print("[MOSAMBEE] Printer closed (state 4)");
+      } else {
+        FlutterMosambeeAar.beginPrint();
+        print("[MOSAMBEE] Mosambee print command sent!");
+      }
+    } catch (e, stack) {
+      print("[MOSAMBEE] Bill print failed: $e\n$stack");
+    }
+  }
+
+  List<String> wrapText(String text, int maxLen) {
+    List<String> lines = [];
+    while (text.length > maxLen) {
+      int idx = text.lastIndexOf(' ', maxLen);
+      if (idx == -1) idx = maxLen;
+      lines.add(text.substring(0, idx));
+      text = text.substring(idx).trimLeft();
+    }
+    if (text.isNotEmpty) lines.add(text);
+    return lines;
+  }
 
   Future<List<int>> testBILL( String billNo,
       List<BillItem> items,
@@ -291,7 +562,7 @@ class MainPageState extends State<MainPage> {
     String custname = gReciptViewStrings['custname'].toString() ?? '';
     String custmobile = gReciptViewStrings['custmobile'].toString() ?? '';
     String custgst = gReciptViewStrings['custgst'].toString() ?? '';
-    String CustomerAddress = gReciptViewStrings['CustomerAddress'].toString() ??
+    String customerAddress = gReciptViewStrings['customerAddress'].toString() ??
         '';
     double subtotal = 0.00;
     double billamount = 0.00;
@@ -582,7 +853,7 @@ class MainPageState extends State<MainPage> {
       ]);
     }
 
-    if (CustomerAddress.isNotEmpty) {
+    if (customerAddress.isNotEmpty) {
       bytes += generator.row([
         PosColumn(
           text: '  Address',
@@ -595,7 +866,7 @@ class MainPageState extends State<MainPage> {
           ),
         ),
         PosColumn(
-          text: '    :    ' + CustomerAddress.toString(),
+          text: '    :    ' + customerAddress.toString(),
           width: 9,
           styles: const PosStyles(fontType: PosFontType.fontA,
             bold: false,
@@ -904,7 +1175,7 @@ class MainPageState extends State<MainPage> {
               width: PosTextSize.size1,),
           ),
           PosColumn(
-            text: item['price'].toStringAsFixed(3),
+            text: item['price'].toStringAsFixed(2),
             width: 2,
             styles: const PosStyles(fontType: PosFontType.fontA,
               align: PosAlign.right,
@@ -913,7 +1184,7 @@ class MainPageState extends State<MainPage> {
               width: PosTextSize.size1,),
           ),
           PosColumn(
-            text: item['totalPrice'].toStringAsFixed(3) + ' ',
+            text: item['totalPrice'].toStringAsFixed(2) + ' ',
             width: 3,
             styles: const PosStyles(fontType: PosFontType.fontA,
               align: PosAlign.right,
@@ -982,7 +1253,7 @@ class MainPageState extends State<MainPage> {
               width: PosTextSize.size1,),
           ),
           PosColumn(
-            text: item['price'].toStringAsFixed(3),
+            text: item['price'].toStringAsFixed(2),
             width: 2,
             styles: const PosStyles(fontType: PosFontType.fontA,
               align: PosAlign.right,
@@ -991,7 +1262,7 @@ class MainPageState extends State<MainPage> {
               width: PosTextSize.size1,),
           ),
           PosColumn(
-            text: item['totalPrice'].toStringAsFixed(3) + ' ',
+            text: item['totalPrice'].toStringAsFixed(2) + ' ',
             width: 3,
             styles: const PosStyles(fontType: PosFontType.fontA,
               align: PosAlign.right,
@@ -1025,7 +1296,7 @@ class MainPageState extends State<MainPage> {
               width: PosTextSize.size1,),
           ),
           PosColumn(
-            text: modi['price_per_unit'].toStringAsFixed(3),
+            text: modi['price_per_unit'].toStringAsFixed(2),
             width: 2,
             styles: const PosStyles(fontType: PosFontType.fontA,
               align: PosAlign.right,
@@ -1034,7 +1305,7 @@ class MainPageState extends State<MainPage> {
               width: PosTextSize.size1,),
           ),
           PosColumn(
-            text: tamount.toStringAsFixed(3) + ' ',
+            text: tamount.toStringAsFixed(2) + ' ',
             width: 3,
             styles: const PosStyles(fontType: PosFontType.fontA,
               align: PosAlign.right,
@@ -1078,7 +1349,7 @@ class MainPageState extends State<MainPage> {
         width: 2,
       ),
       PosColumn(
-        text: subtotal.toStringAsFixed(3) + ' ',
+        text: subtotal.toStringAsFixed(2) + ' ',
         width: 2,
         styles: const PosStyles(
           align: PosAlign.right, bold: true, height: PosTextSize.size1,
@@ -1110,7 +1381,7 @@ class MainPageState extends State<MainPage> {
           width: 3,
         ),
         PosColumn(
-          text: discount.toStringAsFixed(3) + ' ',
+          text: discount.toStringAsFixed(2) + ' ',
           width: 4,
           styles: const PosStyles(
             align: PosAlign.right, height: PosTextSize.size1,
@@ -1158,7 +1429,7 @@ class MainPageState extends State<MainPage> {
           width: 3,
         ),
         PosColumn(
-          text: billamount.toStringAsFixed(3) + ' ',
+          text: billamount.toStringAsFixed(2) + ' ',
           width: 4,
           styles: const PosStyles(
             align: PosAlign.right, height: PosTextSize.size1,
@@ -1245,7 +1516,7 @@ class MainPageState extends State<MainPage> {
             width: 3,
           ),
           PosColumn(
-            text: taxable.toStringAsFixed(3) + ' ',
+            text: taxable.toStringAsFixed(2) + ' ',
             width: 4,
             styles: const PosStyles(
               align: PosAlign.right, height: PosTextSize.size1,
@@ -1274,7 +1545,7 @@ class MainPageState extends State<MainPage> {
               grandTotal.toInt(); // Get the decimal part
           String sign = roundOff <= 0.50 ? '-' : '+';
           double roundValue = roundOff <= 0.50 ? roundOff : (1 - roundOff);
-          return "$sign${roundValue.toStringAsFixed(3)}" + ' ';
+          return "$sign${roundValue.toStringAsFixed(2)}" + ' ';
         })(),
         width: 4,
         styles: const PosStyles(
@@ -1312,7 +1583,7 @@ class MainPageState extends State<MainPage> {
       ),
       PosColumn(
         text: ConstantUtils.customRound(
-          double.parse(grandTotal.toStringAsFixed(3)),),
+          double.parse(grandTotal.toStringAsFixed(2)),),
         width: 4,
         styles: const PosStyles(fontType: PosFontType.fontB,
           bold: false,
@@ -1467,8 +1738,41 @@ class MainPageState extends State<MainPage> {
         await printTicket(bytes, center.printerip3!);
       }
     }
-    return bytes;
+    try {
+      // Your hardcoded Bluetooth printer MAC address
+      final bluetoothPrinter = BluetoothDevice(
+        remoteId: DeviceIdentifier('86:67:7A:6D:8A:7E'),
+      );
 
+      await bluetoothPrinter.connect(timeout: const Duration(seconds: 5));
+      List<BluetoothService> services = await bluetoothPrinter.discoverServices();
+      BluetoothCharacteristic? writeChar;
+      for (var service in services) {
+        for (var c in service.characteristics) {
+          if (c.properties.write || c.properties.writeWithoutResponse) {
+            writeChar = c;
+            break;
+          }
+        }
+        if (writeChar != null) break;
+      }
+      if (writeChar != null) {
+        // Write in chunks (safe for most BT printers)
+        int mtu = 180;
+        for (int offset = 0; offset < bytes.length; offset += mtu) {
+          final chunk = bytes.sublist(offset, (offset + mtu > bytes.length) ? bytes.length : offset + mtu);
+          await writeChar.write(chunk, withoutResponse: true);
+          await Future.delayed(const Duration(milliseconds: 20));
+        }
+      }
+      await bluetoothPrinter.disconnect();
+    } catch (e) {
+      print("Bluetooth print failed: $e");
+      // Optionally, show a toast/snackbar to user
+    }
+    // --------------------------------------
+
+    return bytes;
   }
 
   Future<void> printTicket(List<int> ticket, String targetIp) async {
@@ -1552,10 +1856,10 @@ class MainPageState extends State<MainPage> {
               padding: const EdgeInsets.fromLTRB(6, 0, 6, 6),
               child: Row(
                 children: [
-                  IconButton(
+                 /* IconButton(
                     icon: Icon(Icons.save, color: Colors.blue, size: 50),
                     onPressed: () => captureAndPrintReceipt(context), // ✅ Correct
-                  ),
+                  ),*/
 
                    IconButton(
                        icon: const Icon(
@@ -1630,8 +1934,7 @@ class MainPageState extends State<MainPage> {
                              }
                            }
 
-                  //         // Call print function
-                           await testBILL(
+                          /* await testBILL(
                                billNo,
                                gREciptViewBillItems,
                               gREciptViewBillModifiers,
@@ -1644,11 +1947,40 @@ class MainPageState extends State<MainPage> {
                                settlementModeName,
                               subtotal,
                                localtaxes,
-                               await loadImage('assets/images/reddpos.png'),
+                               await loadImage('assets/images/logo.png'),
                                jsonData // Ensure jsonData is properly passed
                              // costCenters  <-- Remove if testBILL() does not accept this
-                           );
+                           );*/
 
+// Add at the top of your function:
+                           double discountPercentage = double.tryParse(gReciptViewStrings['discountper'] ?? '0') ?? 0.0;
+                           double grandTotal = double.tryParse(gReciptViewStrings['GrandTotal'] ?? '0') ?? 0.0;
+                          await testBILLMosambee(
+                            billNo: gReciptViewStrings['BillNo'] ?? '',
+                            combinedItems: combinedItems,
+                            combinedModiferItem: combinedModiferItem,
+                            productList: productList,
+                            localtaxes: localtaxes,
+                            subtotal: subtotal,
+                            discount: discount,
+                            discountPercentage: discountPercentage, // or whatever your variable is!
+                            discountRemark: discountremark,
+                            billAmount: billamt,
+                            grandTotal: grandTotal, // or whatever your variable is!
+                            pax: int.tryParse(gReciptViewStrings['pax'] ?? '0') ?? 0,
+                            tableNo: gReciptViewStrings['tableName'] ?? '',
+                            settlementModeName: gReciptViewStrings['settlementMode'] ?? '',
+                            logoBytes: await loadImage('assets/images/logo.png'),
+                            finalQuantity: finalQuantity,
+                            footer: footer,
+                            custname: gReciptViewStrings['custname'] ?? '',
+                            custmobile: gReciptViewStrings['custmobile'] ?? '',
+                            custgst: gReciptViewStrings['custgst'] ?? '',
+                            customerAddress: gReciptViewStrings['customerAddress'] ?? '',
+                            Lastclickedmodule: Lastclickedmodule,
+                            username: username,
+                            isDuplicate: DuplicatePrint == 'Y',
+                          );
                          } catch (e) {
                            print("Error fetching cost centers or processing bill: $e");
                          }
@@ -1970,7 +2302,7 @@ class MainPageState extends State<MainPage> {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Image.asset(
-                        'assets/images/reddpos.png',
+                        'assets/images/logo.png',
                         height: 90,
                       ),
                       if (DuplicatePrint == 'N')
@@ -1994,125 +2326,127 @@ class MainPageState extends State<MainPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      // Debug print:
-                      Builder(
-                        builder: (context) {
-                          final orderType = gReciptViewStrings['orderType'] ?? '';
-                          return Text(
-                            orderType,
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
-                          );
-                        },
+                      Text(
+                        gReciptViewStrings['orderType'] == 'Dine'
+                            ? 'Dine In'
+                            : gReciptViewStrings['orderType'] ?? '',
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
                       ),
                     ],
                   ),
                 ),
 
 
+
+
                 if (gReciptViewStrings['custname'].toString().isNotEmpty)
                   Divider(thickness: 1, color: Colors.black),
 
-                if (gReciptViewStrings['custname'].toString().isNotEmpty)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 100,
-                        child: Text(
-                          'Guest Name',
-                          style: const TextStyle(color: Colors.black87),
-                          overflow: TextOverflow.visible,
-                          maxLines: null,
+                  if (gReciptViewStrings['custname'].toString().isNotEmpty)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 100,
+                          child: Text(
+                            'Guest Name',
+                            style: const TextStyle(color: Colors.black87),
+                            overflow: TextOverflow.visible,
+                            maxLines: null,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 10,
-                        child: Text(
-                          ':',
-                          style: const TextStyle(color: Colors.black87),
-                          overflow: TextOverflow.visible,
-                          maxLines: null,
+                        SizedBox(
+                          width: 10,
+                          child: Text(
+                            ':',
+                            style: const TextStyle(color: Colors.black87),
+                            overflow: TextOverflow.visible,
+                            maxLines: null,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 100,
-                        child: Text(
-                          textAlign: TextAlign.left,
-                          gReciptViewStrings['custname'].toString(),
-                          style: const TextStyle(color: Colors.black87),
+                        SizedBox(
+                          width: 100,
+                          child: Text(
+                            textAlign: TextAlign.left,
+                            gReciptViewStrings['custname'].toString(),
+                            style: const TextStyle(color: Colors.black87),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                if (gReciptViewStrings['custmobile'].toString().isNotEmpty)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 100,
-                        child: Text(
-                          'Mobile no',
-                          style: const TextStyle(color: Colors.black87),
-                          overflow: TextOverflow.visible,
-                          maxLines: null,
+                      ],
+                    ),
+                  if (gReciptViewStrings['custmobile'].toString().isNotEmpty)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 100,
+                          child: Text(
+                            'Mobile no',
+                            style: const TextStyle(color: Colors.black87),
+                            overflow: TextOverflow.visible,
+                            maxLines: null,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 10,
-                        child: Text(
-                          ':',
-                          style: const TextStyle(color: Colors.black87),
-                          overflow: TextOverflow.visible,
-                          maxLines: null,
+                        SizedBox(
+                          width: 10,
+                          child: Text(
+                            ':',
+                            style: const TextStyle(color: Colors.black87),
+                            overflow: TextOverflow.visible,
+                            maxLines: null,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 100,
-                        child: Text(
-                          textAlign: TextAlign.left,
-                          gReciptViewStrings['custmobile'].toString(),
-                          style: const TextStyle(color: Colors.black87),
+                        SizedBox(
+                          width: 100,
+                          child: Text(
+                            textAlign: TextAlign.left,
+                            gReciptViewStrings['custmobile'].toString(),
+                            style: const TextStyle(color: Colors.black87),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                if (gReciptViewStrings['custgst'].toString().isNotEmpty)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 100,
-                        child: Text(
-                          'GSTIN',
-                          style: const TextStyle(color: Colors.black87),
-                          overflow: TextOverflow.visible,
-                          maxLines: null,
+                      ],
+                    ),
+                  if (gReciptViewStrings['custgst'].toString().isNotEmpty)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 100,
+                          child: Text(
+                            'GSTIN',
+                            style: const TextStyle(color: Colors.black87),
+                            overflow: TextOverflow.visible,
+                            maxLines: null,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 10,
-                        child: Text(
-                          ':',
-                          style: const TextStyle(color: Colors.black87),
-                          overflow: TextOverflow.visible,
-                          maxLines: null,
+                        SizedBox(
+                          width: 10,
+                          child: Text(
+                            ':',
+                            style: const TextStyle(color: Colors.black87),
+                            overflow: TextOverflow.visible,
+                            maxLines: null,
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 120,
-                        child: Text(
-                          textAlign: TextAlign.left,
-                          gReciptViewStrings['custgst'].toString(),
-                          style: const TextStyle(color: Colors.black87),
+                        SizedBox(
+                          width: 120,
+                          child: Text(
+                            textAlign: TextAlign.left,
+                            gReciptViewStrings['custgst'].toString(),
+                            style: const TextStyle(color: Colors.black87),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
 
-                if (gReciptViewStrings['CustomerAddress']?.toString()?.isNotEmpty ?? false)
+                if (gReciptViewStrings['customerAddress'].toString().isNotEmpty)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.start,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2121,7 +2455,7 @@ class MainPageState extends State<MainPage> {
                         width: 100,
                         child: Text(
                           'Address',
-                          style: const TextStyle(color: Colors.black87, fontSize: 16),
+                          style: const TextStyle(color: Colors.black87),
                           overflow: TextOverflow.visible,
                           maxLines: null,
                         ),
@@ -2130,24 +2464,26 @@ class MainPageState extends State<MainPage> {
                         width: 10,
                         child: Text(
                           ':',
-                          style: const TextStyle(color: Colors.black87, fontSize: 16),
+                          style: const TextStyle(color: Colors.black87),
                           overflow: TextOverflow.visible,
                           maxLines: null,
                         ),
                       ),
-                      SizedBox(
-                        width: 120,
+                      Expanded(
                         child: Text(
                           textAlign: TextAlign.left,
-                          gReciptViewStrings['CustomerAddress'].toString(),
-                          style: const TextStyle(color: Colors.black87, fontSize: 16),
+                          gReciptViewStrings['customerAddress'].toString(),
+                          style: const TextStyle(color: Colors.black87),
+                          softWrap: true,
+                          overflow: TextOverflow.visible,
                         ),
                       ),
                     ],
                   ),
 
-                Divider(thickness: 1, color: Colors.black),
 
+
+                Divider(thickness: 1, color: Colors.black),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.start,
                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -2156,7 +2492,8 @@ class MainPageState extends State<MainPage> {
                       width: 100,
                       child: Text(
                         'Bill No',
-                        style: const TextStyle(color: Colors.black87),
+                        style: TextStyle(color: Colors.black87,fontSize: 16,),
+
                         overflow: TextOverflow.visible,
                         maxLines: null,
                       ),
@@ -2165,7 +2502,7 @@ class MainPageState extends State<MainPage> {
                       width: 10,
                       child: Text(
                         ':',
-                        style: const TextStyle(color: Colors.black87),
+                        style: TextStyle(color: Colors.black87),
                         overflow: TextOverflow.visible,
                         maxLines: null,
                       ),
@@ -2173,22 +2510,28 @@ class MainPageState extends State<MainPage> {
                     SizedBox(
                       width: 65,
                       child: Text(
-                        textAlign: TextAlign.left,
                         remainingString,
-                        style: const TextStyle(color: Colors.black87),
+                        textAlign: TextAlign.left,
+                        style: TextStyle(color: Colors.black87),
                       ),
                     ),
                     SizedBox(
                       width: 100,
                       child: Text(
-                        textAlign: TextAlign.left,
                         lastThreeDigits,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                        textAlign: TextAlign.left,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
                       ),
                     ),
+
                   ],
                 ),
-                if (Lastclickedmodule != "Take Away" && Lastclickedmodule != "Counter" && Lastclickedmodule != "Home Delivery")
+
+                if (gReciptViewStrings['orderType'] == 'Dine' && gReciptViewStrings['tableName'] != null)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.start,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2197,17 +2540,24 @@ class MainPageState extends State<MainPage> {
                         width: 100,
                         child: Text(
                           'Table Name',
-                          style: const TextStyle(color: Colors.black87),
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.normal,
+                            fontSize: 16,
+                          ),
                           overflow: TextOverflow.visible,
                           maxLines: null,
                         ),
                       ),
-
                       SizedBox(
                         width: 10,
                         child: Text(
                           ':',
-                          style: const TextStyle(color: Colors.black87),
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.normal,
+                            fontSize: 16,
+                          ),
                           overflow: TextOverflow.visible,
                           maxLines: null,
                         ),
@@ -2215,14 +2565,32 @@ class MainPageState extends State<MainPage> {
                       SizedBox(
                         width: 100,
                         child: Text(
-                          textAlign: TextAlign.left,
                           gReciptViewStrings['tableName'].toString(),
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+                          textAlign: TextAlign.left,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
                         ),
                       ),
+                      if (gReciptViewStrings['orderType'] == 'Dine')
+                        Transform.translate(
+                          offset: Offset(0.0, 0),
+                          child: Text(
+                            '          Pax: ${gReciptViewStrings['pax'] ?? ''}',
+                            style: TextStyle(
+                              color: Colors.black87,
+                              fontWeight: FontWeight.normal,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
-                if (Lastclickedmodule != "Take Away" && Lastclickedmodule != "Counter" && Lastclickedmodule != "Home Delivery")
+
+                // Conditionally show "Waiter" only if orderType is 'Dine'
+                if (gReciptViewStrings['orderType'] == 'Dine' && gReciptViewStrings['waiter'] != null)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.start,
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -2231,7 +2599,11 @@ class MainPageState extends State<MainPage> {
                         width: 100,
                         child: Text(
                           'Waiter',
-                          style: const TextStyle(color: Colors.black87),
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.normal,
+                            fontSize: 16,
+                          ),
                           overflow: TextOverflow.visible,
                           maxLines: null,
                         ),
@@ -2240,7 +2612,11 @@ class MainPageState extends State<MainPage> {
                         width: 10,
                         child: Text(
                           ':',
-                          style: const TextStyle(color: Colors.black87),
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.normal,
+                            fontSize: 16,
+                          ),
                           overflow: TextOverflow.visible,
                           maxLines: null,
                         ),
@@ -2248,44 +2624,97 @@ class MainPageState extends State<MainPage> {
                       SizedBox(
                         width: 100,
                         child: Text(
-                          textAlign: TextAlign.left,
                           gReciptViewStrings['waiter'].toString(),
-                          style: const TextStyle(color: Colors.black87),
+                          textAlign: TextAlign.left,
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.normal,
+                            fontSize: 16,
+                          ),
                         ),
                       ),
                     ],
                   ),
+
                 Row(
                   mainAxisAlignment: MainAxisAlignment.start,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(
+                    const SizedBox(
                       width: 100,
                       child: Text(
-                        'Date and Time',
-                        style: const TextStyle(color: Colors.black87),
+                        'Date & Time',
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontWeight: FontWeight.normal,
+                          fontSize: 16,
+                        ),
                         overflow: TextOverflow.visible,
                         maxLines: null,
                       ),
                     ),
-                    SizedBox(
+                    const SizedBox(
                       width: 10,
                       child: Text(
                         ':',
-                        style: const TextStyle(color: Colors.black87),
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontWeight: FontWeight.normal,
+                          fontSize: 12,
+                        ),
                         overflow: TextOverflow.visible,
                         maxLines: null,
                       ),
                     ),
                     SizedBox(
-                      width: 150,
-                      child: Text(
-                        textAlign: TextAlign.left,
-                        gReciptViewStrings['DNT'].toString(),
-                        style: const TextStyle(color: Colors.black87),
+                      width: 170,
+                      child: Builder(
+                        builder: (context) {
+                          final billTimeRaw = gReciptViewStrings['billTime'] ?? '';
+                          final posDateRaw = gReciptViewStrings['DNT'] ?? '';
+
+                          String formattedDate = '';
+                          String formattedTime = '';
+
+                          // Format Date & Time (posDate) to dd-MM-yyyy
+                          if (posDateRaw.isNotEmpty) {
+                            try {
+                              final parsedPosDate = DateTime.parse(posDateRaw);
+                              formattedDate = DateFormat('dd-MM-yyyy').format(parsedPosDate);
+                            } catch (e) {
+                              formattedDate = posDateRaw; // fallback
+                            }
+                          }
+
+                          // Format billTime to hh:mm a
+                          if (billTimeRaw.isNotEmpty) {
+                            try {
+                              final parsedBillTime = DateTime.parse(billTimeRaw).toLocal();
+                              formattedTime = DateFormat('hh:mm a').format(parsedBillTime);
+                            } catch (e) {
+                              formattedTime = billTimeRaw; // fallback
+                            }
+                          }
+
+                          final displayDateTime = '$formattedDate ${formattedTime.isNotEmpty ? formattedTime : ''}';
+                          print('DISPLAY DateTime: $displayDateTime');
+
+                          return Text(
+                            displayDateTime,
+                            textAlign: TextAlign.left,
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontWeight: FontWeight.normal,
+                              fontSize: 16,
+                            ),
+                          );
+                        },
                       ),
                     ),
+
                   ],
+
+
                 ),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.start,
@@ -2314,7 +2743,7 @@ class MainPageState extends State<MainPage> {
                       child: Text(
                         textAlign: TextAlign.left,
                         gReciptViewStrings['user'].toString(),
-                        style: const TextStyle(color: Colors.black87),
+                        style: const TextStyle(color: Colors.black87,fontSize: 16),
                       ),
                     ),
                   ],
@@ -2326,13 +2755,12 @@ class MainPageState extends State<MainPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Flexible(
-
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             "Item Name",
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
                             overflow: TextOverflow.visible,
                             maxLines: null,
                           ),
@@ -2340,17 +2768,16 @@ class MainPageState extends State<MainPage> {
 
                         ],
                       ),
-                    )
-                    ,
-                    Padding(
-                      padding: EdgeInsets.only(left: 40),
-                      child: Flexible(
+                    ),
+                    Flexible(
+                      child: Padding(
+                        padding: EdgeInsets.only(left: 45),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               "Qty",
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
                               overflow: TextOverflow.visible,
                               maxLines: null,
                             ),
@@ -2359,16 +2786,16 @@ class MainPageState extends State<MainPage> {
                           ],
                         ),
                       ),
-                    )
+                    ),
 
-                    ,
+                    // Price
                     Flexible(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            "Price",
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
+                            "Rate",
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
                             overflow: TextOverflow.visible,
                             maxLines: null,
                           ),
@@ -2376,15 +2803,16 @@ class MainPageState extends State<MainPage> {
 
                         ],
                       ),
-                    )
-                    ,
+                    ),
+
+                    // Amount
                     Flexible(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             "Amount",
-                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
+                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
                             overflow: TextOverflow.visible,
                             maxLines: null,
                           ),
@@ -2392,10 +2820,10 @@ class MainPageState extends State<MainPage> {
 
                         ],
                       ),
-                    )
-                    ,
+                    ),
                   ],
-                ),
+                )
+                ,
                 Divider(thickness: 1, color: Colors.black),
 
                 ListView.builder(
@@ -2437,8 +2865,9 @@ class MainPageState extends State<MainPage> {
                                   Row(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
+                                      // Reduced name box width slightly to make space
                                       SizedBox(
-                                        width: 120,
+                                        width: 100, // was 120
                                         child: Text(
                                           modi['price_per_unit'] > 0.0 ? '>>' + modi['name'] : '>' + modi['name'],
                                           style: const TextStyle(color: Colors.black87),
@@ -2447,31 +2876,32 @@ class MainPageState extends State<MainPage> {
                                         ),
                                       ),
                                       SizedBox(
-                                        width: 60,
+                                        width: 78, // was 60
                                         child: Text(
                                           modi['quantity'].toString(),
-                                          textAlign: TextAlign.center,
+                                          textAlign: TextAlign.right,
                                           style: const TextStyle(color: Colors.black87),
                                         ),
                                       ),
                                       SizedBox(
-                                        width: 60,
+                                        width: 66, // was 60
                                         child: Text(
                                           textAlign: TextAlign.right,
-                                          '$brandcurrencysymball${modi['price_per_unit'].toStringAsFixed(3)}',
+                                          '${modi['price_per_unit'].toStringAsFixed(2)}',
                                           style: const TextStyle(color: Colors.black87),
                                         ),
                                       ),
                                       SizedBox(
-                                        width: 70,
+                                        width: 72, // was 70
                                         child: Text(
                                           textAlign: TextAlign.right,
-                                          '$brandcurrencysymball${modi['totalAmount'].toStringAsFixed(3)}',
+                                          '${modi['totalAmount'].toStringAsFixed(2)}',
                                           style: const TextStyle(color: Colors.black87),
                                         ),
                                       ),
                                     ],
-                                  ),
+                                  )
+
                                 ],
                               ),
                             );
@@ -2484,32 +2914,7 @@ class MainPageState extends State<MainPage> {
                 Divider(thickness: 1, color: Colors.black87),
                 SizedBox(height: 2),
                 // Footer
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
 
-                  children: [
-                    SizedBox(
-                      width: 100,
-                      child: const Text(
-                        'Sub Total',
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
-                      ),
-                    ),
-                    Text(
-                      "x"+finalQuantity.toString(),
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                    Text(
-                      "",
-                      style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                    Text(
-                      st.toStringAsFixed(3),
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                  ],
-                ),
 
 // ... after Sub Total Row
                 Row(
@@ -2517,7 +2922,7 @@ class MainPageState extends State<MainPage> {
                   children: [
                     const Text(
                       'Sub Total',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.normal, color: Colors.black87),
                     ),
                     Text(
                       "x" + finalQuantity.toString(),
@@ -2528,14 +2933,14 @@ class MainPageState extends State<MainPage> {
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
                     ),
                     Text(
-                      st.toStringAsFixed(3),
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                      st.toStringAsFixed(2),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.normal, color: Colors.black87),
                     ),
                   ],
                 ),
 
 // --- Insert Home Delivery Charge Row here ---
-                if (double.tryParse(homeDeliveryCharge as String) != null && double.parse(homeDeliveryCharge as String) > 0.0)
+                if (double.tryParse(homeDeliveryCharge.toString()) != null && double.parse(homeDeliveryCharge.toString()) > 0.0)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -2544,7 +2949,7 @@ class MainPageState extends State<MainPage> {
                         style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                       ),
                       Text(
-                        double.parse(homeDeliveryCharge as String).toStringAsFixed(3),
+                        double.parse(homeDeliveryCharge.toString()).toStringAsFixed(2),
                         style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                       ),
                     ],
@@ -2558,7 +2963,7 @@ class MainPageState extends State<MainPage> {
                         style: TextStyle(color: Colors.black87),
                       ),
                       Text(
-                        discount.toStringAsFixed(3),
+                        discount.toStringAsFixed(2),
                         style: const TextStyle(color: Colors.black87),
                       ),
                     ],
@@ -2582,7 +2987,7 @@ class MainPageState extends State<MainPage> {
                         style: TextStyle(color: Colors.black87),
                       ),
                       Text(
-                        billamt.toStringAsFixed(3),
+                        billamt.toStringAsFixed(2),
                         style: const TextStyle(color: Colors.black87),
                       ),
                     ],
@@ -2618,7 +3023,7 @@ class MainPageState extends State<MainPage> {
                       ),
                     ),
                     Text(
-                      sttl.toStringAsFixed(3),
+                      sttl.toStringAsFixed(2),
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
                     ),
                   ],
@@ -2630,7 +3035,7 @@ class MainPageState extends State<MainPage> {
                       'Paid By: ${gReciptViewStrings['settlementMode'] ?? ''}',
                       style: const TextStyle(
                         fontSize: 18,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: FontWeight.normal,
                         color: Colors.black87,
                       ),
                     ),
@@ -2652,7 +3057,7 @@ class MainPageState extends State<MainPage> {
                 if (lastMOS == "Multi settlement" || lastMOS == "UPI Online" || lastMOS == "PayPal")
                   Center(
                     child: QrImageView(
-                      data: "upi://pay?pa=mab.037325021710017@axisbank&pn=DGPOS LLP&am=${sttl.toStringAsFixed(3)}&cu=INR&aid=uGICAgIDVt_7-dw",
+                      data: "upi://pay?pa=mab.037325021710017@axisbank&pn=DGPOS LLP&am=${sttl.toStringAsFixed(2)}&cu=INR&aid=uGICAgIDVt_7-dw",
                       size: 100,
                       embeddedImageStyle: const QrEmbeddedImageStyle(
                         size: Size(100, 100),
@@ -2682,7 +3087,7 @@ class MainPageState extends State<MainPage> {
         // Main Card Content2
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-        RepaintBoundary(
+        /*RepaintBoundary(
           key: _receiptKey,
           child: Container(
             width: 400,
@@ -2697,7 +3102,7 @@ class MainPageState extends State<MainPage> {
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         Image.asset(
-                          'assets/images/reddpos.png',
+                          'assets/images/logo.png',
                           height: 70,
                         ),
                         if (DuplicatePrint == 'Y')
@@ -2843,7 +3248,7 @@ class MainPageState extends State<MainPage> {
                       ],
                     ),
 
-                  if (gReciptViewStrings['CustomerAddress']?.toString()?.isNotEmpty ?? false)
+                  if (gReciptViewStrings['customerAddress']?.toString()?.isNotEmpty ?? false)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.start,
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2870,7 +3275,7 @@ class MainPageState extends State<MainPage> {
                           width: 120,
                           child: Text(
                             textAlign: TextAlign.left,
-                            gReciptViewStrings['CustomerAddress'].toString(),
+                            gReciptViewStrings['customerAddress'].toString(),
                             style: const TextStyle(color: Colors.black87,fontWeight: FontWeight.bold, fontSize: 16),
                           ),
                         ),
@@ -2883,11 +3288,11 @@ class MainPageState extends State<MainPage> {
                     mainAxisAlignment: MainAxisAlignment.start,
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      SizedBox(
+                      const SizedBox(
                         width: 100,
                         child: Text(
                           'Bill No',
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: Colors.black87,
                             fontWeight: FontWeight.bold,
                             fontSize: 16,
@@ -2896,11 +3301,11 @@ class MainPageState extends State<MainPage> {
                           maxLines: null,
                         ),
                       ),
-                      SizedBox(
+                      const SizedBox(
                         width: 10,
                         child: Text(
                           ':',
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: Colors.black87,
                             fontWeight: FontWeight.bold,
                             fontSize: 16,
@@ -2909,45 +3314,51 @@ class MainPageState extends State<MainPage> {
                           maxLines: null,
                         ),
                       ),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              remainingString,
-                              style: const TextStyle(
-                                color: Colors.black87,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 15,
+                      Expanded(
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: Row(
+                            children: [
+                              Text(
+                                remainingString,
+                                style: const TextStyle(
+                                  color: Colors.black87,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              lastThreeDigits,
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.black87,
+                              const SizedBox(width: 4),
+                              Text(
+                                lastThreeDigits,
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black87,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 90),
+                      // Remove or reduce this
+                      const SizedBox(width: 20),
 
-                      // ✅ Show only for Dine
                       if (gReciptViewStrings['orderType'] == 'Dine')
-                        Text(
-                          'Pax: ${gReciptViewStrings['pax'] ?? ''}',
-                          style: const TextStyle(
-                            color: Colors.black87,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
+                        Transform.translate(
+                          offset: const Offset(-4.0, 0),
+                          child: Text(
+                            'Pax: ${gReciptViewStrings['pax'] ?? ''}',
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
                           ),
                         ),
                     ],
                   ),
+
 
 
                   if (gReciptViewStrings['orderType'] == 'Dine' && gReciptViewStrings['tableName'] != null)
@@ -3079,12 +3490,12 @@ class MainPageState extends State<MainPage> {
                         child: Builder(
                           builder: (context) {
                             final billTimeRaw = gReciptViewStrings['billTime'] ?? '';
-                            final posDateRaw = gReciptViewStrings['DNT'] ?? '';
+                            final posDateRaw = gReciptViewStrings['Date & Time'] ?? '';
 
                             String formattedDate = '';
                             String formattedTime = '';
 
-                            // Format DNT (posDate) to dd-MM-yyyy
+                            // Format Date & Time (posDate) to dd-MM-yyyy
                             if (posDateRaw.isNotEmpty) {
                               try {
                                 final parsedPosDate = DateTime.parse(posDateRaw);
@@ -3328,7 +3739,7 @@ class MainPageState extends State<MainPage> {
                                           child: Padding(
                                             padding: const EdgeInsets.only(left: 7.0), // Adjust this value as needed
                                             child: Text(
-                                              '${modi['price_per_unit'].toStringAsFixed(3)}',
+                                              '${modi['price_per_unit'].toStringAsFixed(2)}',
                                               textAlign: TextAlign.left,
                                               style: const TextStyle(color: Colors.black87,fontWeight: FontWeight.bold, fontSize: 14), // Keep existing styling
                                             ),
@@ -3338,7 +3749,7 @@ class MainPageState extends State<MainPage> {
                                         SizedBox(
                                           width: 60,
                                           child: Text(
-                                            '${modi['totalAmount'].toStringAsFixed(3)}',
+                                            '${modi['totalAmount'].toStringAsFixed(2)}',
                                             textAlign: TextAlign.left,
                                             style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold,fontSize: 14), // Increased font size
                                           ),
@@ -3380,7 +3791,7 @@ class MainPageState extends State<MainPage> {
                         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
                       ),
                       Text(
-                        st.toStringAsFixed(3),
+                        st.toStringAsFixed(2),
                         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
                       ),
                     ],
@@ -3396,7 +3807,7 @@ class MainPageState extends State<MainPage> {
                           style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         Text(
-                          discount.toStringAsFixed(3),
+                          discount.toStringAsFixed(2),
                           style: const TextStyle(color: Colors.black87),
                         ),
                       ],
@@ -3420,7 +3831,7 @@ class MainPageState extends State<MainPage> {
                           style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         Text(
-                          billamt.toStringAsFixed(3),
+                          billamt.toStringAsFixed(2),
                           style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                       ],
@@ -3435,7 +3846,7 @@ class MainPageState extends State<MainPage> {
                           style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         Text(
-                          (double.tryParse(gReciptViewStrings['homeDeliveryCharge'].toString()) ?? 0.0).toStringAsFixed(3),
+                          (double.tryParse(gReciptViewStrings['homeDeliveryCharge'].toString()) ?? 0.0).toStringAsFixed(2),
                           style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                       ],
@@ -3456,7 +3867,7 @@ class MainPageState extends State<MainPage> {
                     },
                   ),
 
-               /*   Row(
+               *//*   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
@@ -3473,12 +3884,12 @@ class MainPageState extends State<MainPage> {
                           double roundOff = sttl - sttl.toInt(); // Get the decimal part
                           String sign = roundOff <= 0.50 ? '-' : '+';
                           double roundValue = roundOff <= 0.50 ? roundOff : (1 - roundOff);
-                          return "$sign${roundValue.toStringAsFixed(3)}";
+                          return "$sign${roundValue.toStringAsFixed(2)}";
                         })(),
 
                       ),
                     ],
-                  ),*/
+                  ),*//*
 
                   Divider(thickness: 2, color: Colors.black),
                   Row(
@@ -3510,7 +3921,7 @@ class MainPageState extends State<MainPage> {
                         ),
                       ),
                       Text(
-                        (double.tryParse(gReciptViewStrings['GrandTotal'] ?? '0') ?? 0.0).toStringAsFixed(3),
+                        (double.tryParse(gReciptViewStrings['GrandTotal'] ?? '0') ?? 0.0).toStringAsFixed(2),
                         style: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,
@@ -3524,7 +3935,7 @@ class MainPageState extends State<MainPage> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'Settle In: ${gReciptViewStrings['settlementMode']}',
+                          'Paid In: ${gReciptViewStrings['settlementMode']}',
                           style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w600,
@@ -3582,7 +3993,7 @@ class MainPageState extends State<MainPage> {
                   if (lastMOS == "Multi settlement" || lastMOS == "UPI Online" || lastMOS == "PayPal")
                     Center(
                       child: QrImageView(
-                        data: "upi://pay?pa=mab.037325021710017@axisbank&pn=DGPOS LLP&am=${sttl.toStringAsFixed(3)}&cu=INR&aid=uGICAgIDVt_7-dw",
+                        data: "upi://pay?pa=mab.037325021710017@axisbank&pn=DGPOS LLP&am=${sttl.toStringAsFixed(2)}&cu=INR&aid=uGICAgIDVt_7-dw",
                         size: 100,
                         embeddedImageStyle: const QrEmbeddedImageStyle(
                           size: Size(100, 100),
@@ -3592,8 +4003,8 @@ class MainPageState extends State<MainPage> {
                 ],
               ),
             ),
-          ),)
-        ,      ColorFiltered(
+          ),)*/
+             ColorFiltered(
           colorFilter: ColorFilter.mode(
             Color(0xFFFFFFFF),
             BlendMode.srcIn,
@@ -3714,7 +4125,7 @@ class ReceiptItem extends StatelessWidget {
                   itemName,
                   style: const TextStyle(
                     color: Colors.black87,
-                    fontWeight: FontWeight.bold,
+                    fontWeight: FontWeight.normal,
                     fontSize: 15,
                     height: 1.0, // Normal height
                   ),
@@ -3747,7 +4158,7 @@ class ReceiptItem extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.black87,
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.normal,
                   fontSize: 15,
                 ),
               ),
@@ -3756,15 +4167,15 @@ class ReceiptItem extends StatelessWidget {
 
           // Price Column (Moved right)
           Padding(
-            padding: const EdgeInsets.only(left: 20),
+            padding: const EdgeInsets.only(left: 5),
             child: SizedBox(
               width: 60,
               child: Text(
-                '${price.toStringAsFixed(3)}',
+                '${price.toStringAsFixed(2)}',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.black87,
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.normal,
                   fontSize: 15,
                 ),
               ),
@@ -3775,11 +4186,11 @@ class ReceiptItem extends StatelessWidget {
           SizedBox(
             width: 70, // Fixed width for Amount
             child: Text(
-              '${amt.toStringAsFixed(3)}',
+              '${amt.toStringAsFixed(2)}',
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Colors.black87,
-                fontWeight: FontWeight.bold,
+                fontWeight: FontWeight.normal,
                 fontSize: 14,
               ),
             ),
@@ -3806,7 +4217,7 @@ class TaxItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Log tax details
-    debugPrint("Rendering TaxItem -> Name: $taxName, Percent: $percent%, Amount: ${amt.toStringAsFixed(3)}");
+    debugPrint("Rendering TaxItem -> Name: $taxName, Percent: $percent%, Amount: ${amt.toStringAsFixed(2)}");
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2.0),
@@ -3821,7 +4232,7 @@ class TaxItem extends StatelessWidget {
                   '$taxName $percent%',
                   style: const TextStyle(
                       color: Colors.black87,
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.normal,
                       fontSize: 15),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -3845,10 +4256,10 @@ class TaxItem extends StatelessWidget {
             ),
           ),
           Text(
-            '${amt.toStringAsFixed(3)}',
+            '${amt.toStringAsFixed(2)}',
             style: const TextStyle(
                 color: Colors.black87,
-                fontWeight: FontWeight.bold,
+                fontWeight: FontWeight.normal,
                 fontSize: 15),
             textAlign: TextAlign.right,
           ),
@@ -3967,7 +4378,7 @@ class LocalTax {
       "tax_code": code,
       "tax_name": name,
       "tax_percent": percent,
-      "tax_amount": amount.toStringAsFixed(3),
+      "tax_amount": amount.toStringAsFixed(2),
     };
   }
 }
