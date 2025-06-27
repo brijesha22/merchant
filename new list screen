@@ -1,0 +1,3996 @@
+import 'dart:convert';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter/material.dart';
+import 'package:flutter_sample/category_model.dart';
+import 'package:flutter_sample/pricing_modal.dart';
+import 'package:flutter_sample/product_model.dart';
+import 'FireConstants.dart';
+import 'OrderModifier.dart';
+import 'Order_Item_model.dart';
+import 'Tax_model.dart';
+import 'busy_table_screen.dart';
+import 'global_constatnts.dart';
+import 'kot_model.dart';
+import 'main_menu.dart';
+import 'main_menu_desk.dart';
+import 'modifier_model.dart';
+import 'package:collection/collection.dart';
+import 'package:flutter_esc_pos_network/flutter_esc_pos_network.dart';
+import 'package:flutter_esc_pos_utils/flutter_esc_pos_utils.dart';
+import 'package:flutter/material.dart' hide Image;
+import 'package:intl/intl.dart';
+import 'Costcenter_model.dart';
+import 'NativeBridge.dart';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+// --- MODEL CLASSES ---
+
+class SelectedProduct {
+  final String name;
+  final String code;
+  final String status;
+  final String notes;
+  final String costCenterCode;
+  double price;
+  double pricebckp;
+  bool isComp;
+  int quantity;
+  final double totalTaxPercent;
+  final int? groupCode;
+  final int? subcategoryCode;
+  final List<Tax>? taxes;
+  String? waiter;
+  String? billItemId;
+
+  SelectedProduct({
+    required this.name,
+    required this.code,
+    required this.price,
+    this.quantity = 1,
+    this.status = "active",
+    this.notes = "",
+    required this.costCenterCode,
+    this.isComp = false,
+    this.pricebckp = 0.0,
+    this.groupCode,
+    this.subcategoryCode,
+    this.totalTaxPercent = 0.0,
+    this.taxes,
+    this.waiter,
+    this.billItemId,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      "orderNumber": 1,
+      "tableNumber": gReceivedStrings['name'],
+      "itemName": name,
+      "itemCode": code,
+      "quantity": quantity,
+      "notes": notes,
+      "costCenterCode": costCenterCode,
+      "status": status,
+      "price": price,
+      "groupCode": groupCode,
+      "subcategoryCode": subcategoryCode,
+      "taxes": taxes?.map((tax) => tax.toJson()).toList(),
+      "waiter": waiter,
+    };
+  }
+}
+
+class SelectedProductModifier {
+  final String name;
+  final String code;
+  final String product_code;
+  final String order_id;
+  double price_per_unit;
+  int quantity;
+
+  SelectedProductModifier({
+    required this.name,
+    required this.code,
+    required this.price_per_unit,
+    required this.product_code,
+    this.order_id = "",
+    this.quantity = 1,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      "orderNumber": 1,
+      "name": name,
+      "code": code,
+      "product_code": product_code,
+      "order_id": order_id,
+      "quantity": quantity,
+      "price_per_unit": price_per_unit,
+    };
+  }
+}
+
+// --- MAIN APP ---
+void main() => runApp(const MyAppList());
+
+class MyAppList extends StatefulWidget {
+  const MyAppList({super.key});
+
+  _MyAppListState createState() => _MyAppListState();
+}
+
+class _MyAppListState extends State<MyAppList> {
+  List<SelectedProduct> selectedProducts = [];
+  late Future<List<Costcenter>> futureCostcenters;
+  List<SelectedProductModifier> selectedModifiers = [];
+  int? selectedCategoryCode;
+  int? selectedSubcategoryCode;
+  final TextEditingController _searchController = TextEditingController();
+  String whattofollow = "s";
+  Set<String> selectedKOTIds = {}; // KOT numbers as string
+  Map<String, String> myStrings = {};
+  SelectedProduct? _addonSelectedProduct;
+  bool showAddon = false;
+  String deviceName = 'Unknown';
+  BluetoothDevice? selectedDevice;
+  String ccname = '';
+  List<SelectedProduct> existingKOTProducts = [];
+  List<SelectedProductModifier> existingKOTModifiers = [];
+  bool isLoadingKOT = false;
+  bool didFetchKOT = false;
+  String? currentTableName;
+
+  @override
+  void initState() {
+    super.initState();
+    futureCostcenters = fetchCostcenters(); // <-- Correct place!
+    // Any other init code...
+  }
+
+  Future<List<OrderItem>> fetchKotItemsLatest(String tablenumber) async {
+    final response = await http.get(Uri.parse('${apiUrl}order/bytable/$tablenumber?DB=$CLIENTCODE'));
+    if (response.statusCode == 200) {
+      final parsed = json.decode(response.body);
+      if (parsed is List) {
+        return parsed.map<OrderItem>((json) => OrderItem.fromMap(json)).toList();
+      } else if (parsed is Map<String, dynamic>) {
+        return [OrderItem.fromMap(parsed)];
+      } else {
+        return [];
+      }
+    } else {
+      print("Failed to fetch KOT items. Status: ${response.statusCode} Body: ${response.body}");
+      return [];
+    }
+  }
+
+  Future<List<OrderModifier>> fetchKotModifiersLatest(String tablenumber) async {
+    final response = await http.get(Uri.parse('${apiUrl}order/modifierbytable/$tablenumber?DB=$CLIENTCODE'));
+    if (response.statusCode == 200) {
+      final parsed = json.decode(response.body);
+      if (parsed is List) {
+        return parsed.map<OrderModifier>((json) => OrderModifier.fromMap(json)).toList();
+      } else if (parsed is Map<String, dynamic>) {
+        return [OrderModifier.fromMap(parsed)];
+      } else {
+        return [];
+      }
+    } else {
+      print("Failed to fetch KOT modifiers. Status: ${response.statusCode} Body: ${response.body}");
+      return [];
+    }
+  }
+  void addToSelectedModifiers(String name, double price, int quantity,
+      String productcode, String itemcode) {
+    setState(() {
+      final idx = selectedModifiers.indexWhere(
+            (mod) => mod.name == name && mod.product_code == itemcode,
+      );
+      if (idx != -1) {
+        selectedModifiers[idx].quantity += quantity;
+      } else {
+        selectedModifiers.add(SelectedProductModifier(
+          name: name,
+          code: productcode,
+          price_per_unit: price,
+          quantity: quantity,
+          product_code: itemcode,
+        ));
+      }
+    });
+  }
+
+  void removeFromSelectedModifiers(String name, int quantity, String itemcode) {
+    setState(() {
+      final idx = selectedModifiers.indexWhere(
+            (mod) => mod.name == name && mod.product_code == itemcode,
+      );
+      if (idx != -1) {
+        if (selectedModifiers[idx].quantity > quantity) {
+          selectedModifiers[idx].quantity -= quantity;
+        } else {
+          selectedModifiers.removeAt(idx);
+        }
+      }
+    });
+  }
+
+  void addToSelectedProducts(
+      String name,
+      double price,
+      int quantity,
+      String productcode,
+      String costCenterCode,
+      int? groupCode,
+      int? subcategoryCode,
+      List<Tax>? taxes,
+      Product fullProduct,
+      ) {
+    setState(() {
+      bool productExists = false;
+      for (SelectedProduct product in selectedProducts) {
+        if (product.code == productcode) {
+          productExists = true;
+          product.quantity = quantity;
+          break;
+        }
+      }
+      if (!productExists) {
+        selectedProducts.add(SelectedProduct(
+          name: name,
+          price: price,
+          quantity: quantity,
+          costCenterCode: costCenterCode,
+          code: productcode,
+          groupCode: groupCode,
+          subcategoryCode: subcategoryCode,
+          taxes: taxes,
+          waiter: selectedwaitername, // <-- Ensure this is the name string just like PlaceOrder!
+        ));
+      }
+    });
+  }
+
+  void removeSelectedProduct(String code) {
+    setState(() {
+      selectedProducts.removeWhere((product) => product.code == code);
+    });
+  }
+
+  Future<List<Pricing>> fetchPricing() async {
+    final response = await http.get(
+        Uri.parse('${apiUrl}pricing/getAll?DB=$CLIENTCODE'));
+    if (response.statusCode == 200) {
+      return pricingFromMap(response.body);
+    } else {
+      throw Exception('Failed to load pricing');
+    }
+  }
+
+  Future<void> _fetchExistingKOTsForTable(String tableName) async {
+    setState(() => isLoadingKOT = true);
+
+    List<OrderItem> kotItems = await fetchKotItemsLatest(tableName);
+    existingKOTProducts = kotItems.map((item) => SelectedProduct(
+      name: item.itemName ?? "",
+      price: item.price ?? 0,
+      quantity: item.quantity ?? 0,
+      code: item.itemCode.toString(),
+      notes: item.orderNumber.toString(),
+      costCenterCode: item.costCenterCode.toString(),
+    )).toList();
+
+    List<OrderModifier> kotMods = await fetchKotModifiersLatest(tableName);
+    existingKOTModifiers = kotMods.map((mod) => SelectedProductModifier(
+      code: mod.productCode.toString(),
+      quantity: mod.quantity ?? 0,
+      name: mod.name,
+      price_per_unit: double.tryParse(mod.pricePerUnit) ?? 0.0,
+      product_code: mod.productCode.toString(),
+      order_id: mod.kotId.kotId,
+    )).toList();
+
+    setState(() => isLoadingKOT = false);
+  }
+  @override
+  Widget build(BuildContext context) {
+    myStrings = ModalRoute.of(context)?.settings.arguments as Map<String, String>? ?? {};
+    if (myStrings['name'] != null && myStrings['name']!.isNotEmpty) {
+      currentTableName = myStrings['name'];
+    }
+    if (!didFetchKOT && myStrings['name'] != null && myStrings['name']!.isNotEmpty) {
+      didFetchKOT = true;
+      _fetchExistingKOTsForTable(myStrings['name']!);
+    }
+    double screenWidth = MediaQuery.of(context).size.width;
+    double screenHeight = MediaQuery.of(context).size.height;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFE0E0E0),
+      body: Stack(
+        children: [
+          SafeArea(
+            child: Column(
+              children: [
+                // Main Row: Category | Product | KOT
+                Expanded(
+                  child: Row(
+                    children: [
+                      // --- LEFT: Category panel ---
+                      Container(
+                        width: 180,
+                        color: Colors.white,
+                        child: FutureBuilder<List<Category>>(
+                          future: screenWidth > screenHeight ? futureCategoryWindows : futureCategory,
+                          builder: (context, snapshot) {
+                            if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                              return Center(child: CircularProgressIndicator());
+                            }
+                            final categories = snapshot.data!;
+                            return ListView(
+                              children: [
+                                IconButton(
+                                  icon: Icon(Icons.arrow_back, color: Color(0xffc00716)),
+                                  onPressed: () => Navigator.of(context).pop(),
+                                ),
+                                ...categories.map((cat) {
+                                  final isSel = selectedCategoryCode == cat.categoryCode;
+                                  return ListTile(
+                                    selected: isSel,
+                                    selectedTileColor: Color(0xffc00716).withOpacity(0.1),
+                                    title: Text(cat.categoryName,
+                                        style: TextStyle(
+                                          color: isSel ? Color(0xffc00716) : Colors.black,
+                                          fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                        )),
+                                    onTap: () {
+                                      setState(() {
+                                        selectedCategoryCode = cat.categoryCode;
+                                        selectedSubcategoryCode = null;
+                                        whattofollow = "c";
+                                      });
+                                    },
+                                  );
+                                }).toList(),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                      // --- CENTER: Search, subcat, grid ---
+                      Expanded(
+                        child: Column(
+                          children: [
+                            // Top Row: Search left, Cart right
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Row(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 16),
+                                    child: SizedBox(
+                                      width: 290,
+                                      child: TextField(
+                                        controller: _searchController,
+                                        onChanged: (v) => setState(() => whattofollow = "s"),
+                                        decoration: InputDecoration(
+                                          hintText: 'Search for food...',
+                                          prefixIcon: Icon(Icons.search),
+                                          filled: true,
+                                          fillColor: Colors.white,
+                                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                          contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Spacer(),
+                                  IconButton(
+                                    icon: Icon(Icons.shopping_cart, color: Colors.red[700], size: 32),
+                                    onPressed: () {
+                                      // Your cart logic here
+                                      // e.g. openCartOverlay();
+                                    },
+                                  ),
+                                  SizedBox(width: 32),
+                                ],
+                              ),
+                            ),
+                            // Subcategory horizontal if main category selected
+                            if (selectedCategoryCode != null)
+                              Container(
+                                height: 48,
+                                margin: EdgeInsets.only(left: 10),
+                                child: FutureBuilder<List<Category>>(
+                                  future: screenWidth > screenHeight ? futureCategoryWindows : futureCategory,
+                                  builder: (context, snapshot) {
+                                    if (!snapshot.hasData || snapshot.data!.isEmpty) return SizedBox();
+                                    final cats = snapshot.data!;
+                                    final subcats = cats.where((c) =>
+                                    c.categoryCode == selectedCategoryCode &&
+                                        c.subcategoryCode != null &&
+                                        c.subcategoryName != null &&
+                                        c.subcategoryName!.isNotEmpty
+                                    ).toList();
+                                    if (subcats.isEmpty) return SizedBox();
+                                    return ListView(
+                                      scrollDirection: Axis.horizontal,
+                                      children: subcats.map((sub) {
+                                        final isSel = selectedSubcategoryCode == sub.subcategoryCode;
+                                        return Padding(
+                                          padding: const EdgeInsets.only(right: 8.0),
+                                          child: ChoiceChip(
+                                            selected: isSel,
+                                            label: Text(sub.subcategoryName!),
+                                            selectedColor: Color(0xffc00716),
+                                            labelStyle: TextStyle(color: isSel ? Colors.white : Colors.black),
+                                            onSelected: (_) {
+                                              setState(() {
+                                                selectedSubcategoryCode = sub.subcategoryCode;
+                                                whattofollow = "sc";
+                                              });
+                                            },
+                                          ),
+                                        );
+                                      }).toList(),
+                                    );
+                                  },
+                                ),
+                              ),
+                            // --- PRODUCT GRID ---
+                            Expanded(
+                              child: FutureBuilder<List<Pricing>>(
+                                future: fetchPricing(),
+                                builder: (context, pricingSnapshot) {
+                                  if (!pricingSnapshot.hasData || pricingSnapshot.data!.isEmpty) {
+                                    return Center(child: CircularProgressIndicator());
+                                  }
+                                  final pricingData = pricingSnapshot.data!;
+                                  return FutureBuilder<List<Product>>(
+                                    future: futurePostWindows,
+                                    builder: (context, snapshot) {
+                                      if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                                        return Center(child: Text("No products available"));
+                                      }
+                                      List<Product> allProducts = snapshot.data!;
+                                      List<Product> filteredProducts;
+                                      if (_searchController.text.trim().isNotEmpty) {
+                                        filteredProducts = allProducts.where((p) =>
+                                            p.productName.toLowerCase().contains(_searchController.text.toLowerCase())).toList();
+                                      } else if (selectedSubcategoryCode != null) {
+                                        filteredProducts = allProducts.where((p) =>
+                                        p.categoryCode == selectedCategoryCode &&
+                                            p.subcategoryCode == selectedSubcategoryCode).toList();
+                                      } else if (selectedCategoryCode != null) {
+                                        filteredProducts = allProducts.where((p) =>
+                                        p.categoryCode == selectedCategoryCode).toList();
+                                      } else {
+                                        filteredProducts = allProducts;
+                                      }
+                                      return GridView.builder(
+                                        padding: EdgeInsets.all(16),
+                                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                          crossAxisCount: 5,
+                                          childAspectRatio: 1.1,
+                                          crossAxisSpacing: 16,
+                                          mainAxisSpacing: 16,
+                                        ),
+                                        itemCount: filteredProducts.length,
+                                        itemBuilder: (context, index) {
+                                          final product = filteredProducts[index];
+                                          // --- AREA WISE PRICING LOGIC ---
+                                          String area = myStrings['area'] ?? '';
+                                          String lastClickedModule = Lastclickedmodule ?? '';
+                                          Pricing? pricing = pricingData.firstWhere(
+                                                (p) =>
+                                            p.itemCode == product.productCode.toString() &&
+                                                (p.area == area || p.area == lastClickedModule),
+                                            orElse: () => Pricing(
+                                              id: 0,
+                                              status: false,
+                                              itemName: product.productName,
+                                              itemCode: product.productCode.toString(),
+                                              price: 0,
+                                              area: area,
+                                            ),
+                                          );
+                                          double price = pricing.price > 0 ? pricing.price : 0;
+                                          final isVeg = product.dietary?.toLowerCase() == 'veg';
+                                          return GestureDetector(
+                                            onTap: () {
+                                              final selProduct = selectedProducts.firstWhere(
+                                                    (p) => p.code == product.productCode.toString(),
+                                                orElse: () => SelectedProduct(
+                                                    name: '',
+                                                    code: '',
+                                                    price: 0,
+                                                    quantity: 0,
+                                                    costCenterCode: '',
+                                                    taxes: null
+                                                ),
+                                              );
+                                              int newQty = selProduct.name.isNotEmpty ? selProduct.quantity + 1 : 1;
+                                              addToSelectedProducts(
+                                                  product.productName,
+                                                  price,
+                                                  newQty,
+                                                  product.productCode.toString(),
+                                                  product.costcenterCode.toString(),
+                                                  product.groupCode,
+                                                  product.subcategoryCode,
+                                                  product.taxes,
+                                                  product
+                                              );
+                                            },
+                                            child: Container(
+                                              decoration: BoxDecoration(
+                                                border: Border.all(
+                                                  color: isVeg ? Colors.green : Colors.red,
+                                                  width: 2,
+                                                ),
+                                                borderRadius: BorderRadius.circular(10),
+                                                color: Colors.white,
+                                              ),
+                                              margin: EdgeInsets.all(4),
+                                              padding: EdgeInsets.all(8),
+                                              child: Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Text(product.productName, maxLines: 2, overflow: TextOverflow.ellipsis,
+                                                      style: TextStyle(fontWeight: FontWeight.w600)),
+                                                  SizedBox(height: 4),
+                                                  Text('₹${price.toStringAsFixed(2)}',
+                                                      style: TextStyle(
+                                                          color: isVeg ? Colors.green : Colors.red,
+                                                          fontWeight: FontWeight.bold)),
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // --- RIGHT: Selected Items List ---
+                      Container(
+                        width: 350,
+                        color: Colors.white,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(height: 18),
+                            Center(
+                              child: Text(
+                                '${selectedProducts.length} Items Selected',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
+                              ),
+                            ),
+                            Divider(thickness: 1),
+                            Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: Row(children: [
+                                Expanded(child: Text('Item', style: TextStyle(fontWeight: FontWeight.bold))),
+                                Text('Qty', style: TextStyle(fontWeight: FontWeight.bold)),
+                                SizedBox(width: 10),
+                                Text('Rate', style: TextStyle(fontWeight: FontWeight.bold)),
+                                SizedBox(width: 10),
+                                Text('Amount', style: TextStyle(fontWeight: FontWeight.bold)),
+                              ]),
+                            ),
+                            Divider(thickness: 1),
+
+                            // --- KOT LIST: half height, scrollable ---
+                            if (isLoadingKOT)
+                              Center(child: CircularProgressIndicator())
+                            else if (existingKOTProducts.isNotEmpty)
+                              Container(
+                                height: 270, // about half panel, adjust as needed
+                                child:_KotExpansionList(
+                                  kotProducts: existingKOTProducts,
+                                  kotModifiers: existingKOTModifiers,
+                                  selectedKOTIds: selectedKOTIds,
+                                  onKOTCheckboxChanged: (kotNo, checked) {
+                                    setState(() {
+                                      if (checked) {
+                                        selectedKOTIds.add(kotNo);
+                                      } else {
+                                        selectedKOTIds.remove(kotNo);
+                                      }
+                                    });
+                                  },
+                                )
+                              ),
+                            if (existingKOTProducts.isNotEmpty)
+                              Divider(thickness: 1),
+
+                            // --- NEWLY SELECTED ITEMS (can also be made scrollable if needed) ---
+                            if (selectedProducts.isNotEmpty) ...[
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+                                child: Text(
+                                  'New Items to Order',
+                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 16),
+                                ),
+                              ),
+                              Expanded(
+                                child: ListView.builder(
+                                  shrinkWrap: true,
+                                  itemCount: selectedProducts.length,
+                                  itemBuilder: (context, i) {
+                                    final p = selectedProducts[i];
+                                    final modsForThis = selectedModifiers.where((m) => m.product_code == p.code).toList();
+                                    final List<SelectedProductModifier> uniqueMods = [];
+                                    final Set<String> seenNames = {};
+                                    for (final m in modsForThis) {
+                                      if (!seenNames.contains(m.name)) {
+                                        uniqueMods.add(m);
+                                        seenNames.add(m.name);
+                                      }
+                                    }
+                                    return GestureDetector(
+                                      onTap: () {
+                                        setState(() {
+                                          _addonSelectedProduct = p;
+                                          showAddon = true;
+                                        });
+                                      },
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Container(
+                                            margin: EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+                                            padding: EdgeInsets.symmetric(vertical: 4, horizontal: 6),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius: BorderRadius.circular(10),
+                                              border: Border.all(color: Color(0xffc00716).withOpacity(0.14), width: 1),
+                                            ),
+                                            child: Row(children: [
+                                              Expanded(child: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                              Text('${p.quantity}'),
+                                              SizedBox(width: 10),
+                                              Text('₹${p.price.toStringAsFixed(2)}'),
+                                              SizedBox(width: 10),
+                                              Text('₹${(p.quantity * p.price).toStringAsFixed(2)}'),
+                                            ]),
+                                          ),
+                                          if (uniqueMods.isNotEmpty)
+                                            Container(
+                                              margin: EdgeInsets.only(left: 8, right: 8, bottom: 6),
+                                              padding: EdgeInsets.symmetric(vertical: 5, horizontal: 10),
+                                              decoration: BoxDecoration(
+                                                color: Color(0xFFF2F3F7),
+                                                borderRadius: BorderRadius.circular(7),
+                                              ),
+                                              child: Wrap(
+                                                spacing: 8,
+                                                runSpacing: 2,
+                                                children: [
+                                                  for (final mod in uniqueMods)
+                                                    Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Text(
+                                                          '${mod.name}${mod.price_per_unit > 0 ? ' (+₹${mod.price_per_unit.toStringAsFixed(2)})' : ''}',
+                                                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                                                        ),
+                                                        if (mod.quantity > 1)
+                                                          Text(' x${mod.quantity}', style: TextStyle(fontSize: 13, color: Color(0xffc00716))),
+                                                      ],
+                                                    ),
+                                                ],
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                              Divider(thickness: 1),
+                            ],
+
+                            // --- TOTALS & CONTINUE BUTTON ---
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Total Qty: ${selectedProducts.fold(0, (sum, p) => sum + p.quantity)}'),
+                                  Text('Total Amount: ₹${selectedProducts.fold(0.0, (sum, p) => sum + (p.quantity * p.price)).toStringAsFixed(2)}'),
+                                  SizedBox(height: 10),
+                                  Center(
+                                    child: ElevatedButton(
+                                      onPressed: () async {
+                                        if (selectedProducts.isNotEmpty) {
+                                          if ((Lastclickedmodule ?? '').toLowerCase() == 'dine') {
+                                            await postData(
+                                              context,
+                                              selectedModifiers,
+                                              selectedProducts,
+                                              myStrings,
+                                            );
+                                          } else {
+                                            Map<String, dynamic> routeArguments = {
+                                              'selectedProducts': selectedProducts,
+                                              'selectedModifiers': selectedModifiers,
+                                              'tableinfo': myStrings,
+                                            };
+                                            Navigator.pushNamed(context, '/generatebillsscreen', arguments: routeArguments);
+                                          }
+                                        }
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.purple[50],
+                                        foregroundColor: Colors.purple,
+                                        minimumSize: Size(130, 45),
+                                        textStyle: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                                      ),
+                                      child: Text('Continue'),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    ],
+                  ),
+                ),
+                // --- FOOTER ROW: Under category panel and product grid area only ---
+                // At the bottom of your main Column (not inside any Row):
+                Container(
+                  color: Colors.white,
+                  height: 36,
+                  width: double.infinity,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      SizedBox(width: 180), // This matches the width of your category panel
+
+                      _PlainFooterButton(
+                        label: 'Move KOT / Item',
+                        onTap: () async {
+                          Navigator.of(context).push(MaterialPageRoute(
+                            builder: (ctx) => MoveKotOrItemFullScreenOverlay(
+                              fetchAllTables: () => fetchAllTables(CLIENTCODE),
+                              fetchKotsForTable: fetchKots,
+                              fetchKotItemsLatest: fetchKotItemsLatest,
+                              fetchKotModifiersLatest: fetchKotModifiersLatest,
+                              moveKotApi: moveKot,
+                              moveItemApi: moveItem,
+                              printKOTWithHeading: printKOTWithHeading,
+                            ),
+                          ));
+                        },
+                      ),
+                      _PlainFooterButton(
+                        label: 'Cancel KOT / Item',
+                        onTap: () async {
+                          Navigator.of(context).push(MaterialPageRoute(
+                            builder: (ctx) => CancelKotOrItemFullScreenOverlay(
+                              fetchAllTables: () => fetchAllTables(CLIENTCODE),
+                              fetchKotsForTable: fetchKots,
+                              fetchKotItemsLatest: fetchKotItemsLatest,
+                              fetchKotModifiersLatest: fetchKotModifiersLatest,
+                              printKOTWithHeading: printKOTWithHeading,
+                              cancelkot: cancelkot,
+                              cancelItem: (kotId, itemCode, qty) async {
+                                // Use your logic here
+                                final tableNo = int.tryParse(currentTableName!) ?? 0;
+                                await cancelItem(kotId, itemCode, tableNo, qty);
+                              },
+                            ),
+                          ));
+                        },
+                      ),
+
+                      _PlainFooterButton(
+                          label: 'Move Table',
+                          onTap: () async {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (ctx) => MoveTableFullScreenOverlay(
+                                  fetchAllTables: () => fetchAllTables(CLIENTCODE),
+                                  fetchKotsForTable: fetchKots,
+                                  fetchKotItemsLatest: fetchKotItemsLatest,
+                                  fetchKotModifiersLatest: fetchKotModifiersLatest,
+                                  printKOTWithHeading: printKOTWithHeading,
+                                  moveTableApi: moveTable, // your function: Future<bool> moveTable(BuildContext, String existingTableNo, String newTableNo, String db)
+                                  currentTableName: currentTableName!, // The source table
+                                  db: CLIENTCODE,
+                                  waiterName: selectedwaitername,
+                                  ccName: ccname,
+                                  brandName: brandName,
+                                  username: username,
+                                ),
+                              ),
+                            );
+                          }
+                      ),
+                      // Optionally, add Expanded(child: Container()) to push buttons to left
+                    ],
+                  ),
+                )
+              ],
+            ),
+          ),
+          if (showAddon && _addonSelectedProduct != null)
+            AddonDialogOverlay(
+              product: _addonSelectedProduct!,
+              selectedModifiers: selectedModifiers,
+              onAddModifier: addToSelectedModifiers,
+              onRemoveModifier: removeFromSelectedModifiers,
+              onClose: () {
+                setState(() {
+                  showAddon = false;
+                  _addonSelectedProduct = null;
+                });
+              },
+            ),
+        ],
+      ),
+    );
+  }
+  final String apirl = '${apiUrl}order/create?DB=' + CLIENTCODE;
+
+  late String gKOTNO;
+
+  Future<void>postData(BuildContext context, List<SelectedProductModifier> sms,
+      List<SelectedProduct> sps, Map<String, String> tableinfo)
+  async {
+    double screenWidth = MediaQuery.of(context).size.width;
+    double screenHeight = MediaQuery.of(context).size.height;
+
+    // Use selectedwaitername for waiter information
+    for (SelectedProduct product in sps) {
+      product.waiter = selectedwaitername;  // Assign selectedwaitername to waiter field
+    }
+
+    final orderItems = sps.map((product) => product.toJson()).toList();
+    print("Order Items JSON: ${jsonEncode(orderItems)}");
+
+    final orderModifiers = sms.map((product) => product.toJson()).toList();
+
+    final response = await http.post(
+      Uri.parse(apirl),
+      headers: <String, String>{
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        "orderItems": orderItems,
+        "orderModifiers": orderModifiers,
+        "order_type": Lastclickedmodule,
+        "tableName": tableinfo['name'],
+      }),
+    );
+
+    print("Hello${jsonEncode({
+      "orderItems": orderItems,
+    })}");
+
+    if (response.statusCode == 201) {
+      print("Data Posted Successfully");
+
+      final String url2 =
+          '${apiUrl}table/update/${tableinfo['id']!}?DB=$CLIENTCODE';
+
+      final Map<String, dynamic> data2 = {
+        "tableName": tableinfo['name'],
+        "status": "Occupied",
+        "id": tableinfo['id'],
+        "area": tableinfo['area'],
+        "pax": tableinfo['pax'] ?? 0,
+      };
+
+      final headers = {
+        'Content-Type': 'application/json',
+      };
+
+      try {
+        final response = await http.put(
+          Uri.parse(url2),
+          headers: headers,
+          body: jsonEncode(data2),
+        );
+
+        if (response.statusCode == 200) {
+          print('POST request successful');
+          print('Response data: ${response.body}');
+        } else {
+          print('POST request failed with status: ${response.statusCode}');
+          print('Response data: ${response.body}');
+        }
+      } catch (e) {
+        print('Error sending POST request: $e');
+      }
+
+      Map<String, dynamic> parsedData = json.decode(response.body.toString());
+      print(parsedData);
+
+      String kotId = parsedData['orderNumber'];
+      String itemName = parsedData['itemName'];
+      int quantity = parsedData['quantity'];
+      String status = parsedData['status'];
+
+      print('KOT ID: $kotId');
+      print('Item Name: $itemName');
+      print('Quantity: $quantity');
+      print('Status: $status');
+
+      gKOTNO = kotId;
+
+
+      Map<String, List<SelectedProduct>> groupedByCostCenter = {};
+      List<SelectedProduct> allProducts = [];
+
+      for (var product in sps) {
+        allProducts.add(product);
+        if (groupedByCostCenter.containsKey(product.costCenterCode)) {
+          groupedByCostCenter[product.costCenterCode]!.add(product);
+        } else {
+          groupedByCostCenter[product.costCenterCode] = [product];
+        }
+      }
+
+      for (var entry in groupedByCostCenter.entries) {
+        final costCenterCode = entry.key;
+        final products = entry.value;
+
+        // Lookup cost center name for this group
+        String groupCcName = '';
+        List<Costcenter> costcenters = await futureCostcenters;
+        for (var cc in costcenters) {
+          if (cc.code == costCenterCode) {
+            groupCcName = cc.name;
+            break;
+          }
+        }
+
+        testKOT(kotId, products, sms, tableinfo['name']!);////only consolidate print///
+
+        /* final bluetoothPrinter = BluetoothDevice(
+            remoteId: DeviceIdentifier('33:68:02:19:00:13'),
+          );
+// For each group if needed:
+          await testBluetoothKOT(
+            bluetoothPrinter,
+            kotId,
+            products,
+            sms,
+            tableinfo['name']!,
+          );*/
+      }
+      //////without consolidate///// it will print below
+      //   testKOT(kotId, allProducts, sms, tableinfo['name']!);
+
+      // testKOT(kotId, sps,tableinfo['tableId']!);
+      NativeBridge.callNativeMethodKot(
+          gKOTNO,
+          jsonEncode(orderItems).toString(),
+          "₹",
+          tableinfo['name']!,
+          Lastclickedmodule);
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          Future.delayed(const Duration(seconds: 3), () {
+            Navigator.of(context).pop();
+
+            if (Lastclickedmodule == "Take Away") {
+              Map<String, dynamic> routeArguments = {
+                'tableinfo': tableinfo,
+              };
+
+              Navigator.pushNamed(context, '/generatebillsscreen',
+                  arguments: routeArguments);
+            } else {
+              if (screenWidth > screenHeight) {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const MainMenuDesk(),
+                  ),
+                );
+              } else {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const MainMenu(),
+                  ),
+                );
+              }
+            }
+          });
+
+          final backgroundColor = Colors.white.withOpacity(0.7);
+
+          return AlertDialog(
+            backgroundColor: backgroundColor,
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Icon(
+                  Icons.check_circle,
+                  size: 48.0,
+                  color: Colors.green,
+                ),
+                const SizedBox(height: 16.0),
+                Text(
+                  'No.DN$kotId\nOrder Placed Successfully',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.blue.shade800,
+                    fontSize: 18.0,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            actions: const [],
+          );
+        },
+      );
+    } else {
+      print("hello---${response.body}");
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          Future.delayed(const Duration(seconds: 3), () {
+            Navigator.of(context).pop();
+          });
+
+          final backgroundColor = Colors.white.withOpacity(0.7);
+
+          return AlertDialog(
+            backgroundColor: backgroundColor,
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Icon(
+                  Icons.check_circle,
+                  size: 48.0,
+                  color: Colors.white,
+                ),
+                const SizedBox(height: 16.0),
+                Text(
+                  'Failed to place order',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.blue.shade800,
+                    fontSize: 18.0,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            actions: const [],
+          );
+        },
+      );
+
+      throw Exception('Failed to place order');
+    }
+  }
+
+
+  String capitalizeWords(String input) {
+    return input.split(' ').map((word) {
+      if (word.isEmpty) return word;
+      return word[0].toUpperCase() + word.substring(1).toLowerCase();
+    }).join(' ');
+  }
+
+
+
+  Future<void> printTicket(List<int> ticket, String targetip) async {
+    final printer = PrinterNetworkManager(targetip);
+    PosPrintResult connect = await printer.connect();
+    if (connect == PosPrintResult.success) {
+      PosPrintResult printing = await printer.printTicket(ticket);
+
+      print(printing.msg);
+      printer.disconnect();
+    }
+  }
+
+  Future<List<int>> testKOT(String kotno, List<SelectedProduct> items,
+      List<SelectedProductModifier> modifiers, String tableno, {bool isGrouped = false, String? consolidatedPrinterIp})
+  async
+  {
+    final profile = await CapabilityProfile.load();
+    final generator = Generator(PaperSize.mm80, profile);
+    List<int> bytes = [];
+
+    // Split the last 3 digits
+    String prefix = kotno.substring(0, kotno.length - 3);
+    String suffix = kotno.substring(kotno.length - 3);
+
+    String cccode = items[0].costCenterCode.toString();
+    List<String> printers = await getPrinterIPsByCode(cccode);
+
+    String heading = 'KOT';
+    if (ccname.startsWith("Bar")) {
+      heading = "BOT";
+    } else if (ccname.startsWith("Kitchen")) {
+      heading = "KOT";
+    }
+    /*  List<int> bytes = [];
+      String prefix = kotno.substring(0, kotno.length - 3);
+      String suffix = kotno.substring(kotno.length - 3);
+      Map<String, List<SelectedProduct>> groupedByCostCenter = {};
+      for (var product in items) {
+        if (!groupedByCostCenter.containsKey(product.costCenterCode)) {
+          groupedByCostCenter[product.costCenterCode] = [];
+        }
+        groupedByCostCenter[product.costCenterCode]!.add(product);
+      }
+
+      List<Costcenter> costcenters = await futureCostcenters;
+
+      String cccode = items[0].costCenterCode.toString();
+      bool isGroupKOT = groupedByCostCenter.keys.length > 1;
+      String heading = isGroupKOT ? 'Consolidated' : 'KOT';
+      if (!isGroupKOT) {
+        if (ccname.startsWith("Bar")) {
+          heading = "BOT";
+        } else if (ccname.startsWith("Kitchen")) {
+          heading = "KOT";
+        }
+      }*/
+
+    // Printing the heading
+    bytes += generator.text(heading,
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: true,
+          height: PosTextSize.size3,
+          width: PosTextSize.size3,
+          align: PosAlign.center,
+        ));
+
+    bytes += generator.text('',
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+
+    bytes += generator.text(brandName,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.center,
+        ));
+
+    bytes += generator.text('',
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+    bytes += generator.text(ccname,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.center,
+        ));
+    bytes += generator.text('',
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+
+
+    bytes += generator.text('Dine-In',
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: true,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.center,
+        ));
+
+    bytes += generator.text('________________________________________________',
+        styles: PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+
+    bytes += generator.row([
+      PosColumn(
+        text: heading + ' No      :',
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: '$prefix$suffix',
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: false,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+
+    bytes += generator.row([
+      PosColumn(
+        text: 'Table No    :',
+
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: tableno,
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+
+    bytes += generator.row([
+      PosColumn(
+        text: 'KOT By      :',
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: '$username',
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+
+    bytes += generator.row([
+      PosColumn(
+        text: 'Waiter      :',
+
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: selectedwaitername,
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+    bytes += generator.row([
+      PosColumn(
+        text: 'Date & Time :',
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: DateFormat('dd-MM-yyyy hh:mm:ss a').format(DateTime.now()),
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: true,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+
+    bytes += generator.text('________________________________________________',
+        styles: PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+
+    bytes += generator.row([
+      PosColumn(
+        text: 'Qty',
+        width: 2,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: 'Item Name',
+        width: 9,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: '' + ' ',
+        width: 1,
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: true,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.center,
+        ),
+      ),
+    ]);
+    bytes += generator.text('________________________________________________',
+        styles: PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+
+    for (SelectedProduct item in items) {
+      final itemModifiers = modifiers
+          .where((modifier) => modifier.product_code == item.code)
+          .toList();
+
+      bytes += generator.row([
+        PosColumn(
+          text: item.quantity.toString(),
+          width: 2,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            align: PosAlign.left,
+            bold: false,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+          ),
+        ),
+        PosColumn(
+          text: item.name,
+          width: 9,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            align: PosAlign.left,
+            bold: false,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+          ),
+        ),
+        PosColumn(
+          text: '' + ' ',
+          width: 1,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            align: PosAlign.right,
+            bold: false,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+          ),
+        ),
+      ]);
+
+      bytes += generator.text('',
+          styles: const PosStyles(
+            fontType: PosFontType.fontA,
+            bold: false,
+            height: PosTextSize.size1,
+            width: PosTextSize.size1,
+          ));
+
+      for (SelectedProductModifier modi in itemModifiers) {
+        bytes += generator.row([
+          PosColumn(
+            text: modi.price_per_unit > 0 ? '>>' : '>',
+            width: 2,
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              align: PosAlign.left,
+              bold: false,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+            ),
+          ),
+          PosColumn(
+            text: modi.quantity.toString() + ' x ' + modi.name,
+            width: 9,
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              align: PosAlign.left,
+              bold: false,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+            ),
+          ),
+          PosColumn(
+            text: '' + ' ',
+            width: 1,
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              align: PosAlign.right,
+              bold: false,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+            ),
+          ),
+        ]);
+
+        bytes += generator.text('',
+            styles: const PosStyles(
+              fontType: PosFontType.fontA,
+              bold: false,
+              height: PosTextSize.size1,
+              width: PosTextSize.size1,
+            ));
+      }
+    }
+
+
+
+    // ITEMS SECTION - GROUPED BY COST CENTER
+    /* for (var entry in groupedByCostCenter.entries) {
+        // Get cost center name for this group
+        String currentCcName = '';
+        for (var cc in costcenters) {
+          if (cc.code == entry.key) {
+            currentCcName = cc.name;
+            break;
+          }
+        }
+
+
+        bytes += generator.row([
+          PosColumn(
+            text: ' ' + currentCcName + ' ',
+            width: 11, // Adjust width to fit your text
+            styles: const PosStyles(
+              fontType: PosFontType.fontB, // Use font B for bold text
+              bold: true, // Make the text bold
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+              align: PosAlign.center,
+
+            ),
+          ),
+          PosColumn(
+            text: '', // Blank column to balance the row
+            width: 1,  // Adjust width as needed
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              bold: true,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+              align: PosAlign.center,
+            ),
+          ),
+        ]);
+
+  // Simulating a thicker underline with a line of underscores (or dashes)
+        bytes += generator.row([
+          PosColumn(
+            text: '',  // A line of underscores to simulate a thick underline
+            width: 11, // Same width as the text above
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,  // Use bold for thicker appearance
+              bold: true,  // Bold the line for thicker effect
+              height: PosTextSize.size1,  // Normal height to keep it consistent
+              width: PosTextSize.size2,
+              align: PosAlign.center,  // Align to center to match the text
+            ),
+          ),
+          PosColumn(
+            text: '', // Blank column for alignment
+            width: 1,  // Same width as before
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              bold: true,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+              align: PosAlign.center,
+            ),
+          ),
+        ]);
+
+
+
+
+        // Print items for this cost center
+        for (SelectedProduct item in entry.value) {
+          final itemModifiers = modifiers
+              .where((modifier) => modifier.product_code == item.code)
+              .toList();
+
+          bytes += generator.row([
+            PosColumn(
+              text: item.quantity.toString(),
+              width: 2,
+              styles: const PosStyles(
+                fontType: PosFontType.fontB,
+                align: PosAlign.left,
+                bold: false,
+                height: PosTextSize.size2,
+                width: PosTextSize.size2,
+              ),
+            ),
+            PosColumn(
+              text: item.name,
+              width: 9,
+              styles: const PosStyles(
+                fontType: PosFontType.fontB,
+                align: PosAlign.left,
+                bold: false,
+                height: PosTextSize.size2,
+                width: PosTextSize.size2,
+              ),
+            ),
+            PosColumn(
+              text: '' + ' ',
+              width: 1,
+              styles: const PosStyles(
+                fontType: PosFontType.fontB,
+                align: PosAlign.right,
+                bold: false,
+                height: PosTextSize.size2,
+                width: PosTextSize.size2,
+              ),
+            ),
+          ]);
+
+          bytes += generator.text('',
+              styles: const PosStyles(
+                fontType: PosFontType.fontA,
+                bold: false,
+                height: PosTextSize.size1,
+                width: PosTextSize.size1,
+              ));
+
+          for (SelectedProductModifier modi in itemModifiers) {
+            bytes += generator.row([
+              PosColumn(
+                text: modi.price_per_unit > 0 ? '>>' : '>',
+                width: 2,
+                styles: const PosStyles(
+                  fontType: PosFontType.fontB,
+                  align: PosAlign.left,
+                  bold: false,
+                  height: PosTextSize.size2,
+                  width: PosTextSize.size2,
+                ),
+              ),
+              PosColumn(
+                text: modi.quantity.toString() + ' x ' + modi.name,
+                width: 9,
+                styles: const PosStyles(
+                  fontType: PosFontType.fontB,
+                  align: PosAlign.left,
+                  bold: false,
+                  height: PosTextSize.size2,
+                  width: PosTextSize.size2,
+                ),
+              ),
+              PosColumn(
+                text: '' + ' ',
+                width: 1,
+                styles: const PosStyles(
+                  fontType: PosFontType.fontB,
+                  align: PosAlign.right,
+                  bold: false,
+                  height: PosTextSize.size2,
+                  width: PosTextSize.size2,
+                ),
+              ),
+            ]);
+
+            bytes += generator.text('',
+                styles: const PosStyles(
+                  fontType: PosFontType.fontA,
+                  bold: false,
+                  height: PosTextSize.size1,
+                  width: PosTextSize.size1,
+                ));
+          }
+        }
+      }*/
+
+    bytes += generator.text('________________________________________________',
+        styles: PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+
+    bytes += generator.feed(1);
+    bytes += generator.cut();
+
+    for (String ip in printers) {
+      printTicket(bytes, ip);
+    }
+    /* for (var entry in groupedByCostCenter.entries) {
+        final costcenter = costcenters.firstWhere(
+              (cc) => cc.code == entry.key,
+          orElse: () => null as Costcenter,
+        );
+
+        if (costcenter != null) {
+          int copies = costcenter.noOfcopies ?? 1;
+
+          if (costcenter.printerip1 != null && costcenter.printerip1!.isNotEmpty) {
+            for (int i = 0; i < copies; i++) {
+              await printTicket(bytes, costcenter.printerip1!);
+            }
+          }
+          if (costcenter.printerip2 != null && costcenter.printerip2!.isNotEmpty) {
+            await printTicket(bytes, costcenter.printerip2!);
+          }
+          if (costcenter.printerip3 != null && costcenter.printerip3!.isNotEmpty) {
+            await printTicket(bytes, costcenter.printerip3!);
+          }
+        }
+      }*/
+
+    return bytes;
+  }
+  Future<List<String>> getPrinterIPsByCode(String code) async {
+    List<String> printers = [];
+
+    double screenWidth = MediaQuery.of(context).size.width;
+    double screenHeight = MediaQuery.of(context).size.height;
+
+    List<Costcenter> costcenters;
+
+    if (screenWidth > screenHeight) {
+      costcenters = await futureCostcentersWindows;
+    } else {
+      costcenters = await futureCostcenters;
+    }
+
+    for (var costcenter in costcenters) {
+      if (costcenter.code == code) {
+        ccname = costcenter.name;
+        int copies = costcenter.noOfcopies ?? 1;
+        print('primary printer: $copies');
+
+
+        if (costcenter.printerip1 != null && costcenter.printerip1!.isNotEmpty) {
+          for (int i = 0; i < copies; i++) {
+            printers.add(costcenter.printerip1!);
+          }
+        }
+        if (costcenter.printerip2 != null && costcenter.printerip2!.isNotEmpty) {
+          printers.add(costcenter.printerip2!);
+        }
+        if (costcenter.printerip3 != null && costcenter.printerip3!.isNotEmpty) {
+          printers.add(costcenter.printerip3!);
+        }
+      }
+    }
+
+    return printers;
+  }
+
+  Future<List<TableItem>> fetchAllTables(String dbCode) async {
+    final response = await http.get(Uri.parse('${apiUrl}table/getAll?DB='+CLIENTCODE));
+    if (response.statusCode == 200) {
+      final parsed = json.decode(response.body).cast<Map<String, dynamic>>();
+      List<TableItem> toReturn = parsed.map<TableItem>((json) => TableItem.fromMap(json)).toList();
+      return toReturn;
+    } else {
+      throw Exception('Failed to load tables');
+    }
+  }
+  Future<bool> moveItem(String kotId, String itemCode, String existingTableNo, String newTableNo, int qty) async {
+    print("[MOVE ITEM] Moving item $itemCode (qty $qty) from KOT $kotId Table $existingTableNo to $newTableNo");
+    final response = await http.put(
+      Uri.parse('${apiUrl}order/moveitem?kotId=$kotId&itemCode=$itemCode&existingTableNo=$existingTableNo&newTableNo=$newTableNo&qty=$qty&DB=$CLIENTCODE'),
+    );
+    print("[MOVE ITEM] Response: ${response.statusCode} ${response.body}");
+    return response.statusCode == 200;
+  }
+  Future<bool> moveKot(String kotId, String existingTableNo, String newTableNo) async {
+    print("[MOVE KOT] Moving KOT $kotId from Table $existingTableNo to $newTableNo");
+    final response = await http.put(
+      Uri.parse('${apiUrl}order/movekot?kotId=$kotId&existingTableNo=$existingTableNo&newTableNo=$newTableNo&DB=$CLIENTCODE'),
+    );
+    print("[MOVE KOT] Response: ${response.statusCode} ${response.body}");
+    return response.statusCode == 200;
+  }
+  Future<void> cancelkot(String kotid) async {
+    print("[CANCEL KOT] Attempting to cancel KOT: $kotid");
+    final response = await http.get(Uri.parse('${apiUrl}order/cancelkot/$kotid?DB=$CLIENTCODE'));
+    print("[CANCEL KOT] Response: ${response.statusCode} ${response.body}");
+    if (response.statusCode != 200) throw Exception('Failed to cancel KOT');
+  }
+  Future<bool> cancelItem(String kotId, String itemCode, int tableNo, int cancelQty) async {
+    print("[CANCEL ITEM] Cancelling item $itemCode from KOT $kotId Table $tableNo (qty $cancelQty)");
+    final response = await http.put(
+      Uri.parse('${apiUrl}order/cancelitem?kotId=$kotId&itemCode=$itemCode&tableNo=$tableNo&cancelQty=$cancelQty&DB=$CLIENTCODE'),
+    );
+    print("[CANCEL ITEM] Response: ${response.statusCode} ${response.body}");
+    return response.statusCode == 200;
+  }
+  Future<bool> moveTable(BuildContext context, String existingTableNo, String newTableNo, String db) async {
+    print("[MOVE TABLE] Moving all KOTs from Table $existingTableNo to $newTableNo");
+    final response = await http.put(
+      Uri.parse('${apiUrl}order/movetable?existingTableNo=$existingTableNo&newTableNo=$newTableNo&DB=$db'),
+    );
+    print("[MOVE TABLE] Response: ${response.statusCode} ${response.body}");
+    return response.statusCode == 200;
+  }
+  Future<void> printKOTWithHeading({
+    required String heading,
+    required String kotno,
+    required List<SelectedProduct> items,
+    required List<SelectedProductModifier> modifiers,
+    required String tableno,
+    String? moveTableName,
+  })
+  async {
+    final profile = await CapabilityProfile.load();
+    final generator = Generator(PaperSize.mm80, profile);
+    List<int> bytes = [];
+
+    String prefix = kotno.length > 3 ? kotno.substring(0, kotno.length - 3) : kotno;
+    String suffix = kotno.length > 3 ? kotno.substring(kotno.length - 3) : '';
+    String cccode = items.isNotEmpty ? items[0].costCenterCode.toString() : '';
+    List<String> printers = await getPrinterIPsByCode(cccode);
+
+
+    // Inside printKOTWithHeading:
+    if (heading == "DUPLICATE") {
+      bytes += generator.text(heading,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            bold: true,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+            align: PosAlign.center,
+          ));
+    } else {
+      bytes += generator.text(heading,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            bold: true,
+            height: PosTextSize.size3,
+            width: PosTextSize.size3,
+            align: PosAlign.center,
+          ));
+    }
+
+    bytes += generator.text('',
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+    bytes += generator.text(brandName,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.center,
+        ));
+    bytes += generator.text('',
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+    bytes += generator.text(ccname,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.center,
+        ));
+    bytes += generator.text('',
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+        ));
+    bytes += generator.text('Dine-In',
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: true,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.center,
+        ));
+
+    bytes += generator.text('_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ', styles: const PosStyles());
+
+    bytes += generator.row([
+      PosColumn(
+        text: 'KOT No      :',
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: '$prefix$suffix',
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: false,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.left,
+        ),
+      ),
+    ]);
+    bytes += generator.row([
+      PosColumn(
+        text: 'Table No    :',
+
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: tableno,
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+    bytes += generator.row([
+      PosColumn(
+        text: 'KOT By      :',
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: '$username',
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+    bytes += generator.row([
+      PosColumn(
+        text: 'Waiter      :',
+
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: selectedwaitername,
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+    bytes += generator.row([
+      PosColumn(
+        text: 'Date & Time :',
+        width: 4,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: DateFormat('dd-MM-yyyy hh:mm:ss a').format(DateTime.now()),
+        width: 8,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: true,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+
+    ]);
+    bytes += generator.text('_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _', styles: const PosStyles());
+
+    bytes += generator.row([
+      PosColumn(
+        text: 'Qty',
+        width: 2,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: 'Item Name',
+        width: 9,
+        styles: const PosStyles(
+          fontType: PosFontType.fontA,
+          bold: false,
+          height: PosTextSize.size1,
+          width: PosTextSize.size1,
+          align: PosAlign.left,
+        ),
+      ),
+      PosColumn(
+        text: '' + ' ',
+        width: 1,
+        styles: const PosStyles(
+          fontType: PosFontType.fontB,
+          bold: true,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2,
+          align: PosAlign.center,
+        ),
+      ),
+    ]);
+    bytes += generator.text('_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _', styles: const PosStyles());
+
+    for (SelectedProduct item in items) {
+      final itemModifiers = modifiers
+          .where((modifier) => modifier.product_code == item.code)
+          .toList();
+
+      bytes += generator.row([
+        PosColumn(
+          text: item.quantity.toString(),
+          width: 2,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            align: PosAlign.left,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+          ),
+        ),
+        PosColumn(
+          text: item.name,
+          width: 9,
+          styles: const PosStyles(
+            fontType: PosFontType.fontB,
+            align: PosAlign.left,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+          ),
+        ),
+        PosColumn(
+          text: '',
+          width: 1,
+          styles: const PosStyles(),
+        ),
+      ]);
+      bytes += generator.text('', styles: const PosStyles());
+
+      for (SelectedProductModifier modi in itemModifiers) {
+        bytes += generator.row([
+          PosColumn(
+            text: modi.price_per_unit > 0 ? '>>' : '>',
+            width: 2,
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              align: PosAlign.left,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+            ),
+          ),
+          PosColumn(
+            text: '${modi.quantity} x ${modi.name}',
+            width: 9,
+            styles: const PosStyles(
+              fontType: PosFontType.fontB,
+              align: PosAlign.left,
+              height: PosTextSize.size2,
+              width: PosTextSize.size2,
+            ),
+          ),
+          PosColumn(
+            text: '',
+            width: 1,
+            styles: const PosStyles(),
+          ),
+        ]);
+        bytes += generator.text('', styles: const PosStyles());
+      }
+    }
+
+    bytes += generator.text('_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _  _ _ _ _ _ _ _ _ _ _ _ _', styles: const PosStyles());
+    bytes += generator.feed(1);
+    bytes += generator.cut();
+
+    await printTicket(bytes, "192.168.1.222");
+  }
+
+  Future<List<OrderItem>> fetchKotItems(String tablenumber) async {
+    selectedProducts.clear();
+    final response = await http.get(Uri.parse('${apiUrl}order/bytable/$tablenumber?DB=$CLIENTCODE'));
+    if (response.statusCode == 200) {
+      final parsed = json.decode(response.body);
+      List<OrderItem> toreturn = [];
+      if (parsed is List) {
+        toreturn = parsed.map<OrderItem>((json) => OrderItem.fromMap(json)).toList();
+      } else if (parsed is Map<String, dynamic>) {
+        toreturn = [OrderItem.fromMap(parsed)];
+      }
+      for (OrderItem item in toreturn) {
+        selectedProducts.add(SelectedProduct(
+          name: item.itemName.toString(),
+          price: item.price ?? 0,
+          quantity: item.quantity ?? 0,
+          code: item.itemCode.toString(),
+          notes: item.orderNumber.toString(),
+          costCenterCode: item.costCenterCode.toString(),
+        ));
+      }
+      return toreturn;
+    } else {
+      throw Exception('Failed to load Product');
+    }
+  }
+}
+
+class _PlainFooterButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _PlainFooterButton({required this.label, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      style: TextButton.styleFrom(
+        minimumSize: Size(0, 28),
+        padding: EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: Colors.blue[900],
+        textStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 15),
+      ),
+      onPressed: onTap,
+      child: Text(label),
+    );
+  }
+}
+class _KotExpansionList extends StatefulWidget {
+  final List<SelectedProduct> kotProducts;
+  final List<SelectedProductModifier> kotModifiers;
+  final Set<String> selectedKOTIds;
+  final Function(String kotNo, bool checked) onKOTCheckboxChanged;
+
+  const _KotExpansionList({
+    required this.kotProducts,
+    required this.kotModifiers,
+    required this.selectedKOTIds,
+    required this.onKOTCheckboxChanged,
+    Key? key,
+  }) : super(key: key);
+
+  @override
+  State<_KotExpansionList> createState() => _KotExpansionListState();
+}
+class _KotExpansionListState extends State<_KotExpansionList> {
+  int? expandedIndex;
+
+  int _extractKotNumber(String kotNo) {
+    final match = RegExp(r'\d+$').firstMatch(kotNo);
+    return match != null ? int.parse(match.group(0)!) : 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final kotGroups = <String, List<SelectedProduct>>{};
+    for (final item in widget.kotProducts) {
+      final kotNo = item.notes ?? '';
+      kotGroups.putIfAbsent(kotNo, () => []).add(item);
+    }
+    final kotKeys = kotGroups.keys.toList()
+      ..sort((a, b) => _extractKotNumber(b).compareTo(_extractKotNumber(a)));
+    expandedIndex ??= kotKeys.isNotEmpty ? 0 : null;
+
+    return ListView.builder(
+      itemCount: kotKeys.length,
+      itemBuilder: (context, idx) {
+        final kotNo = kotKeys[idx];
+        final items = kotGroups[kotNo]!;
+        return Theme(
+          data: Theme.of(context).copyWith(
+            dividerColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+          ),
+          child: ExpansionTile(
+            key: PageStorageKey(kotNo),
+            initiallyExpanded: idx == expandedIndex,
+            tilePadding: EdgeInsets.symmetric(horizontal: 8),
+            backgroundColor: Colors.white,
+            collapsedBackgroundColor: Colors.white,
+            title: Row(
+              children: [
+                // Checkbox REMOVED
+                Text(
+                  'KOT $kotNo', // Removed # symbol
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.red[800],
+                    fontSize: 13, // Decreased font size
+                  ),
+                ),
+              ],
+            ),
+            onExpansionChanged: (open) {
+              setState(() {
+                if (open) expandedIndex = idx;
+              });
+            },
+            children: [
+              ...items.map((p) {
+                final modsForThis = widget.kotModifiers
+                    .where((m) => m.product_code == p.code)
+                    .toList();
+                final List<SelectedProductModifier> uniqueMods = [];
+                final Set<String> seenNames = {};
+                for (final m in modsForThis) {
+                  if (!seenNames.contains(m.name)) {
+                    uniqueMods.add(m);
+                    seenNames.add(m.name);
+                  }
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      margin: EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+                      padding: EdgeInsets.symmetric(vertical: 4, horizontal: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(children: [
+                        Expanded(child: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12))),
+                        Text('${p.quantity}', style: TextStyle(fontSize: 12)),
+                        SizedBox(width: 10),
+                        Text('₹${p.price.toStringAsFixed(2)}', style: TextStyle(fontSize: 12)),
+                        SizedBox(width: 10),
+                        Text('₹${(p.quantity * p.price).toStringAsFixed(2)}', style: TextStyle(fontSize: 12)),
+                      ]),
+                    ),
+                    if (uniqueMods.isNotEmpty)
+                      Container(
+                        margin: EdgeInsets.only(left: 20, right: 8, bottom: 6),
+                        padding: EdgeInsets.symmetric(vertical: 4, horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: Color(0xFFF2F3F7),
+                          borderRadius: BorderRadius.circular(7),
+                        ),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 2,
+                          children: [
+                            for (final mod in uniqueMods)
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    '${mod.name}${mod.price_per_unit > 0 ? ' (+₹${mod.price_per_unit.toStringAsFixed(2)})' : ''}',
+                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Colors.blueGrey),
+                                  ),
+                                  if (mod.quantity > 1)
+                                    Text(' x${mod.quantity}', style: TextStyle(fontSize: 11, color: Color(0xffc00716))),
+                                ],
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class AddonDialogOverlay extends StatelessWidget {
+  final SelectedProduct product;
+  final List<SelectedProductModifier> selectedModifiers;
+  final void Function(String, double, int, String, String) onAddModifier;
+  final void Function(String, int, String) onRemoveModifier;
+  final VoidCallback onClose;
+
+  const AddonDialogOverlay({
+    required this.product,
+    required this.selectedModifiers,
+    required this.onAddModifier,
+    required this.onRemoveModifier,
+    required this.onClose,
+    super.key,
+  });
+
+  void showCustomModifierDialog(BuildContext context, String pcode, String itemcode) {
+    TextEditingController nameController = TextEditingController();
+    TextEditingController priceController = TextEditingController();
+    TextEditingController quantityController = TextEditingController();
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) {
+        return AlertDialog(
+          title: const Center(
+            child: Text('Custom Addon', style: TextStyle(color: Color(0xffcb0707))),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Name')),
+              const SizedBox(height: 10),
+              TextField(controller: priceController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Price')),
+              const SizedBox(height: 10),
+              TextField(controller: quantityController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Quantity')),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: () {
+                  int qty = int.tryParse(quantityController.text) ?? 1;
+                  double price = double.tryParse(priceController.text) ?? 0.0;
+                  onAddModifier(nameController.text, price, qty, pcode, itemcode);
+                  Navigator.of(context).pop();
+                },
+                child: const Text('Add'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<Modifier>>(
+      future: MediaQuery.of(context).size.width > MediaQuery.of(context).size.height
+          ? futureModifierWindows
+          : futureModifier,
+      builder: (context, snapshot) {
+        return Material(
+          color: Colors.black.withOpacity(0.25),
+          child: Center(
+            child: Container(
+              width: 550,
+              constraints: BoxConstraints(maxHeight: 550),
+              padding: EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Header Row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Add-ons for ${product.name}',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                        ),
+                      ),
+                      IconButton(icon: Icon(Icons.close), onPressed: onClose)
+                    ],
+                  ),
+                  SizedBox(height: 10),
+
+                  // Custom Addon Button
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: ElevatedButton.icon(
+                      onPressed: () => showCustomModifierDialog(context, product.code, product.code),
+                      icon: Icon(Icons.edit, size: 16, color: Color(0xFFD5282A)),
+                      label: Text('Custom Addon', style: TextStyle(color: Colors.black54, fontSize: 13)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey[200],
+                        padding: EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                      ),
+                    ),
+                  ),
+                  SizedBox(height: 16),
+
+                  // Modifier Grid
+                  if (snapshot.connectionState == ConnectionState.waiting)
+                    Center(child: CircularProgressIndicator()),
+                  if (snapshot.hasError)
+                    Text("Error loading modifiers"),
+                  if (snapshot.hasData)
+                    Expanded(
+                      child: (() {
+                        final allModifiers = snapshot.data!
+                            .where((m) => m.productCode.toString() == product.code)
+                            .toList();
+
+                        final List<Modifier> uniqueModifiers = [];
+                        final Set<String> seenNames = {};
+                        for (final m in allModifiers) {
+                          if (!seenNames.contains(m.modifierName)) {
+                            uniqueModifiers.add(m);
+                            seenNames.add(m.modifierName);
+                          }
+                        }
+
+                        if (uniqueModifiers.isEmpty) {
+                          return Center(child: Text("No Add-ons available"));
+                        }
+
+                        return GridView.builder(
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            childAspectRatio: 1.2,
+                            crossAxisSpacing: 14,
+                            mainAxisSpacing: 14,
+                          ),
+                          itemCount: uniqueModifiers.length,
+                          itemBuilder: (context, idx) {
+                            final mod = uniqueModifiers[idx];
+                            final selected = selectedModifiers.where((m) =>
+                            m.name == mod.modifierName && m.product_code == product.code).toList();
+                            final modQty = selected.isNotEmpty ? selected.first.quantity : 0;
+
+                            return GestureDetector(
+                              onTap: () => onAddModifier(mod.modifierName, mod.price, 1, mod.productCode.toString(), product.code),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: modQty > 0 ? Colors.green[100] : Colors.white,
+                                  border: Border.all(
+                                    color: modQty > 0 ? Colors.green : Colors.grey,
+                                    width: 1.5,
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.grey.shade300,
+                                      blurRadius: 4,
+                                      offset: Offset(2, 2),
+                                    ),
+                                  ],
+                                ),
+                                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      mod.modifierName,
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    if (mod.price > 0)
+                                      Text(
+                                        '+₹${mod.price.toStringAsFixed(2)}',
+                                        style: TextStyle(color: Colors.black54, fontSize: 12),
+                                      ),
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        IconButton(
+                                          icon: Icon(Icons.remove_circle, color: Colors.red, size: 18),
+                                          onPressed: modQty > 0
+                                              ? () => onRemoveModifier(mod.modifierName, 1, product.code)
+                                              : null,
+                                          padding: EdgeInsets.zero,
+                                          constraints: BoxConstraints(),
+                                        ),
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                                          child: Text(
+                                            '$modQty',
+                                            style: TextStyle(fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: Icon(Icons.add_circle, color: Colors.green, size: 18),
+                                          onPressed: () => onAddModifier(
+                                              mod.modifierName,
+                                              mod.price,
+                                              1,
+                                              mod.productCode.toString(),
+                                              product.code),
+                                          padding: EdgeInsets.zero,
+                                          constraints: BoxConstraints(),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      })(),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class MoveKotOrItemFullScreenOverlay extends StatefulWidget {
+  final Future<List<TableItem>> Function() fetchAllTables;
+  final Future<List<Kot>> Function(String) fetchKotsForTable;
+  final Future<List<OrderItem>> Function(String tableName) fetchKotItemsLatest;
+  final Future<List<OrderModifier>> Function(String tableName) fetchKotModifiersLatest;
+  final Future<bool> Function(String kotId, String existingTable, String newTable) moveKotApi;
+  final Future<bool> Function(String kotId, String itemCode, String existingTable, String newTable, int qty) moveItemApi;
+  final Future<void> Function({
+  required String heading,
+  required String kotno,
+  required List<SelectedProduct> items,
+  required List<SelectedProductModifier> modifiers,
+  required String tableno,
+  String? moveTableName,
+  }) printKOTWithHeading;
+
+  const MoveKotOrItemFullScreenOverlay({
+    super.key,
+    required this.fetchAllTables,
+    required this.fetchKotsForTable,
+    required this.fetchKotItemsLatest,
+    required this.fetchKotModifiersLatest,
+    required this.moveKotApi,
+    required this.moveItemApi,
+    required this.printKOTWithHeading,
+  });
+
+  @override
+  State<MoveKotOrItemFullScreenOverlay> createState() => _MoveKotOrItemFullScreenOverlayState();
+}
+
+
+class _MoveKotOrItemFullScreenOverlayState extends State<MoveKotOrItemFullScreenOverlay> {
+  List<TableItem> allTables = [];
+  TableItem? selectedSourceTable;
+  TableItem? selectedDestTable;
+  List<Kot> tableKots = [];
+  List<OrderItem> allItems = [];
+  List<OrderModifier> allMods = [];
+  Set<String> selectedKOTIds = {};
+  Map<String, Map<String, int>> moveItems = {};
+  bool isLoadingTables = true;
+  bool isLoadingKots = false;
+  bool isLoadingItems = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initTables();
+  }
+
+  Future<void> _initTables() async {
+    setState(() => isLoadingTables = true);
+    allTables = await widget.fetchAllTables();
+    selectedSourceTable = allTables.firstWhereOrNull((t) => t.status == "Occupied") ?? (allTables.isNotEmpty ? allTables.first : null);
+    selectedDestTable = allTables.firstWhereOrNull((t) => t.tableName != selectedSourceTable?.tableName) ?? (allTables.length > 1 ? allTables[1] : null);
+    isLoadingTables = false;
+    if (selectedSourceTable != null) {
+      await _loadKotsItems(selectedSourceTable!.tableName);
+    }
+    setState(() {});
+  }
+
+  Future<void> _loadKotsItems(String tableName) async {
+    setState(() {
+      isLoadingKots = true;
+      isLoadingItems = true;
+      selectedKOTIds.clear();
+      moveItems.clear();
+    });
+    tableKots = await widget.fetchKotsForTable(tableName);
+    allItems = await widget.fetchKotItemsLatest(tableName);
+    allMods = await widget.fetchKotModifiersLatest(tableName);
+    isLoadingKots = false;
+    isLoadingItems = false;
+    setState(() {});
+  }
+
+  void _showQtyDialog({
+    required String kotId,
+    required String itemCode,
+    required int maxQty,
+    required String itemName,
+  }) async {
+    final controller = TextEditingController(
+      text: moveItems[kotId]?[itemCode]?.toString() ?? "1",
+    );
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          title: Text("Move Qty for $itemName", style: TextStyle(fontWeight: FontWeight.bold)),
+          content: SizedBox(
+            width: 200,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: "Enter Qty to Move (1-$maxQty)",
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              child: Text("Cancel"),
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+            ElevatedButton(
+              child: Text("OK"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                final val = int.tryParse(controller.text.trim());
+                if (val == null || val < 1 || val > maxQty) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    SnackBar(content: Text("Enter a valid quantity (1-$maxQty)")),
+                  );
+                  return;
+                }
+                setState(() {
+                  moveItems[kotId] ??= {};
+                  moveItems[kotId]![itemCode] = val;
+                });
+                Navigator.of(ctx).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Move KOT (full) logic
+  Future<void> _moveSelectedKOTs() async {
+    if (selectedDestTable == null) return;
+    for (String kotId in selectedKOTIds) {
+      bool success = await widget.moveKotApi(
+        kotId,
+        selectedSourceTable!.tableName,
+        selectedDestTable!.tableName,
+      );
+      if (success) {
+        final kotItems = allItems.where((item) => item.orderNumber == kotId).toList();
+        final kotMods = allMods.where((mod) => mod.kotId.kotId.toString() == kotId).toList();
+        List<SelectedProduct> products = kotItems.map((item) => SelectedProduct(
+          name: item.itemName ?? "",
+          price: item.price ?? 0,
+          quantity: item.quantity ?? 0,
+          code: item.itemCode.toString(),
+          notes: item.orderNumber.toString(),
+          costCenterCode: item.costCenterCode.toString(),
+        )).toList();
+        List<SelectedProductModifier> modifiers = kotMods.map((mod) => SelectedProductModifier(
+          code: mod.productCode.toString(),
+          quantity: mod.quantity ?? 0,
+          name: mod.name,
+          price_per_unit: double.tryParse(mod.pricePerUnit) ?? 0.0,
+          product_code: mod.productCode.toString(),
+          order_id: mod.kotId.kotId,
+        )).toList();
+        await widget.printKOTWithHeading(
+          heading: "KOT moved to ${selectedDestTable!.tableName}",
+          kotno: kotId,
+          items: products,
+          modifiers: modifiers,
+          tableno: selectedDestTable!.tableName,
+          moveTableName: selectedDestTable!.tableName,
+        );
+      }
+    }
+    setState(() {
+      selectedKOTIds.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('KOT(s) moved!')),
+    );
+    Navigator.of(context).pop();
+  }
+
+  // Move selected items logic
+  Future<void> _moveSelectedItems() async {
+    if (selectedDestTable == null) return;
+    for (final kotEntry in moveItems.entries) {
+      final kotId = kotEntry.key;
+      for (final entry in kotEntry.value.entries) {
+        final itemCode = entry.key;
+        final qty = entry.value;
+        bool result = await widget.moveItemApi(
+          kotId,
+          itemCode,
+          selectedSourceTable!.tableName,
+          selectedDestTable!.tableName,
+          qty,
+        );
+        if (result) {
+          // Print moved item
+          final allDestItems = await widget.fetchKotItemsLatest(selectedDestTable!.tableName);
+          final allDestMods = await widget.fetchKotModifiersLatest(selectedDestTable!.tableName);
+          final destKots = await widget.fetchKotsForTable(selectedDestTable!.tableName);
+          String? newKotId;
+          for (final k in destKots) {
+            final matches = allDestItems.where((it) => it.orderNumber == k.kotId.toString() && it.itemCode.toString() == itemCode);
+            if (matches.isNotEmpty) {
+              newKotId = k.kotId.toString();
+              break;
+            }
+          }
+          if (newKotId != null) {
+            final OrderItem? item = allDestItems.firstWhereOrNull(
+                  (it) => it.orderNumber == newKotId && it.itemCode.toString() == itemCode,
+            );
+            if (item != null) {
+              final itemMods = allDestMods.where((mod) =>
+              mod.kotId.kotId.toString() == newKotId &&
+                  mod.productCode.toString() == itemCode
+              ).toList();
+              List<SelectedProduct> products = [
+                SelectedProduct(
+                  name: item.itemName ?? "",
+                  price: item.price ?? 0,
+                  quantity: qty,
+                  code: item.itemCode.toString(),
+                  notes: item.orderNumber.toString(),
+                  costCenterCode: item.costCenterCode.toString(),
+                )
+              ];
+              List<SelectedProductModifier> modifiers = itemMods.map((mod) => SelectedProductModifier(
+                code: mod.productCode.toString(),
+                quantity: mod.quantity ?? 0,
+                name: mod.name,
+                price_per_unit: double.tryParse(mod.pricePerUnit) ?? 0.0,
+                product_code: mod.productCode.toString(),
+                order_id: mod.kotId.kotId,
+              )).toList();
+              await widget.printKOTWithHeading(
+                heading: "Item moved from to ${selectedDestTable!.tableName}",
+                kotno: newKotId,
+                items: products,
+                modifiers: modifiers,
+                tableno: selectedDestTable!.tableName,
+                moveTableName: selectedDestTable!.tableName,
+              );
+            }
+          }
+        }
+      }
+    }
+    setState(() {
+      moveItems.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Item(s) moved!')),
+    );
+    Navigator.of(context).pop();
+  }
+
+  Widget buildKotCard(Kot kot) {
+    final kotId = kot.kotId.toString();
+    bool isSelected = selectedKOTIds.contains(kotId);
+    final itemsInKot = allItems.where((item) => item.orderNumber == kotId).toList();
+
+    return Card(
+      elevation: 4,
+      margin: EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: isSelected
+            ? BorderSide(color: Colors.orange, width: 2)
+            : BorderSide(color: Colors.grey[300]!, width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Checkbox(
+                  value: isSelected,
+                  activeColor: Colors.orange,
+                  onChanged: (checked) {
+                    setState(() {
+                      if (checked == true) {
+                        selectedKOTIds.add(kotId);
+                      } else {
+                        selectedKOTIds.remove(kotId);
+                      }
+                    });
+                  },
+                ),
+                SizedBox(width: 6),
+                Text(
+                  'KOT ${kot.kotId}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                    color: isSelected ? Colors.orange : Colors.black,
+                  ),
+                ),
+                SizedBox(width: 18),
+                Icon(Icons.access_time, size: 17, color: Colors.grey[600]),
+                SizedBox(width: 3),
+                Text('${kot.orderTime}', style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+              ],
+            ),
+            SizedBox(height: 10),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: NeverScrollableScrollPhysics(),
+                itemCount: itemsInKot.length,
+                separatorBuilder: (_, __) => Divider(height: 1),
+                itemBuilder: (ctx, idx) {
+                  final item = itemsInKot[idx];
+                  final itemCode = item.itemCode.toString();
+                  final selectedQty = moveItems[kotId]?[itemCode] ?? 0;
+                  final maxQty = (item.quantity ?? 0);
+
+                  // If qty==1, show checkbox to select; if qty>1, show checkbox+edit qty
+                  return ListTile(
+                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                    leading: Checkbox(
+                      value: selectedQty > 0,
+                      onChanged: maxQty == 0
+                          ? null
+                          : (checked) {
+                        setState(() {
+                          moveItems[kotId] ??= {};
+                          if (checked == true) {
+                            moveItems[kotId]![itemCode] = maxQty == 1 ? 1 : (moveItems[kotId]![itemCode] ?? 1);
+                          } else {
+                            moveItems[kotId]!.remove(itemCode);
+                            if (moveItems[kotId]!.isEmpty) moveItems.remove(kotId);
+                          }
+                        });
+                      },
+                    ),
+                    title: Text(item.itemName ?? "", style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
+                    subtitle: Row(
+                      children: [
+                        Text("Qty: $maxQty", style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+                        SizedBox(width: 12),
+                        Text("Rate: ${item.price}", style: TextStyle(fontSize: 13, color: Colors.blueGrey)),
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (maxQty > 1)
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.orange,
+                              side: BorderSide(color: Colors.orange),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: Icon(Icons.edit, color: Colors.orange),
+                            label: Text("Edit Qty", style: TextStyle(fontSize: 13)),
+                            onPressed: () {
+                              _showQtyDialog(
+                                kotId: kotId,
+                                itemCode: itemCode,
+                                maxQty: maxQty,
+                                itemName: item.itemName ?? "",
+                              );
+                            },
+                          ),
+                        if (selectedQty > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Chip(
+                              label: Text("To Move: $selectedQty", style: TextStyle(color: Colors.white)),
+                              backgroundColor: Colors.orange,
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: Text(
+            'Move KOT / Item',
+            style: TextStyle(color: Colors.orange[800])
+        ),
+        backgroundColor: Colors.white,
+        iconTheme: IconThemeData(color: Colors.orange),
+        leading: IconButton(
+          icon: Icon(Icons.close, color: Colors.orange[800]),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        elevation: 2,
+      ),
+      body: isLoadingTables
+          ? Center(child: CircularProgressIndicator())
+          : Row(
+        children: [
+          // LEFT: KOTs and items for selected source table (always expanded)
+          Expanded(
+            flex: 2,
+            child: isLoadingKots
+                ? Center(child: CircularProgressIndicator())
+                : ListView(
+              padding: EdgeInsets.only(top: 10, bottom: 0),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 8),
+                  child: Text(
+                    selectedSourceTable != null && selectedDestTable != null
+                        ? "Move from ${selectedSourceTable!.tableName} to ${selectedDestTable!.tableName}"
+                        : "",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.orange[900]),
+                  ),
+                ),
+                ...tableKots.map(buildKotCard),
+              ],
+            ),
+          ),
+          // RIGHT: Table grid for destination
+          Expanded(
+            flex: 1,
+            child: Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(12.0),
+              child: buildTableGrid(
+                allTables.where((t) => t.tableName != selectedSourceTable?.tableName).toList(),
+                selectedTableName: selectedDestTable?.tableName,
+                onTapTable: (t) {
+                  setState(() {
+                    selectedDestTable = t;
+                  });
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        color: Colors.white,
+        child: Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                icon: Icon(Icons.swap_horiz, color: Colors.white),
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14.0),
+                  child: Text('Move Selected KOT(s)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange[700],
+                  minimumSize: Size(double.infinity, 54),
+                  elevation: 2,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                onPressed: (selectedKOTIds.isEmpty || selectedDestTable == null)
+                    ? null
+                    : _moveSelectedKOTs,
+              ),
+            ),
+            SizedBox(width: 16),
+            Expanded(
+              child: ElevatedButton.icon(
+                icon: Icon(Icons.swap_calls, color: Colors.white),
+                label: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14.0),
+                  child: Text('Move Selected Item(s)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.yellow[800],
+                  minimumSize: Size(double.infinity, 54),
+                  elevation: 2,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                onPressed: (moveItems.isEmpty || selectedDestTable == null)
+                    ? null
+                    : _moveSelectedItems,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+class CancelKotOrItemFullScreenOverlay extends StatefulWidget {
+  final Future<List<TableItem>> Function() fetchAllTables;
+  final Future<List<Kot>> Function(String) fetchKotsForTable;
+  final Future<List<OrderItem>> Function(String) fetchKotItemsLatest;
+  final Future<List<OrderModifier>> Function(String) fetchKotModifiersLatest;
+  final Future<void> Function({
+  required String heading,
+  required String kotno,
+  required List<SelectedProduct> items,
+  required List<SelectedProductModifier> modifiers,
+  required String tableno,
+  String? moveTableName,
+  }) printKOTWithHeading;
+  final Future<void> Function(String kotId) cancelkot;
+  final Future<void> Function(String kotId, String itemCode, int qty) cancelItem;
+
+  const CancelKotOrItemFullScreenOverlay({
+    super.key,
+    required this.fetchAllTables,
+    required this.fetchKotsForTable,
+    required this.fetchKotItemsLatest,
+    required this.fetchKotModifiersLatest,
+    required this.printKOTWithHeading,
+    required this.cancelkot,
+    required this.cancelItem,
+  });
+
+  @override
+  State<CancelKotOrItemFullScreenOverlay> createState() => _CancelKotOrItemFullScreenOverlayState();
+}
+
+class _CancelKotOrItemFullScreenOverlayState extends State<CancelKotOrItemFullScreenOverlay> {
+  List<TableItem> allTables = [];
+  TableItem? selectedTable;
+  List<Kot> tableKots = [];
+  List<OrderItem> allItems = [];
+  List<OrderModifier> allMods = [];
+  Set<String> selectedKOTIds = {};
+  Map<String, Map<String, int>> cancelledItems = {}; // kotId -> {itemCode: qty}
+  bool isLoadingTables = true;
+  bool isLoadingKots = false;
+  bool isLoadingItems = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initTables();
+  }
+
+  Future<void> _initTables() async {
+    setState(() => isLoadingTables = true);
+    allTables = await widget.fetchAllTables();
+    selectedTable = allTables.firstWhereOrNull((t) => t.status == "Occupied") ?? (allTables.isNotEmpty ? allTables.first : null);
+    isLoadingTables = false;
+    if (selectedTable != null) {
+      await _loadKotsItems(selectedTable!.tableName);
+    }
+    setState(() {});
+  }
+
+  Future<void> _loadKotsItems(String tableName) async {
+    setState(() {
+      isLoadingKots = true;
+      isLoadingItems = true;
+      selectedKOTIds.clear();
+      cancelledItems.clear();
+    });
+    tableKots = await widget.fetchKotsForTable(tableName);
+    allItems = await widget.fetchKotItemsLatest(tableName);
+    allMods = await widget.fetchKotModifiersLatest(tableName);
+    isLoadingKots = false;
+    isLoadingItems = false;
+    setState(() {});
+  }
+
+  void _showQtyDialog({
+    required String kotId,
+    required String itemCode,
+    required int maxQty,
+    required String itemName,
+  }) async {
+    final controller = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: Colors.white,
+          title: Text("Cancel Qty for $itemName", style: TextStyle(fontWeight: FontWeight.bold)),
+          content: SizedBox(
+            width: 200,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: "Enter Qty to Cancel (1-$maxQty)",
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (_) {
+                (ctx as Element).markNeedsBuild();
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              child: Text("Cancel"),
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+            ElevatedButton(
+              child: Text("OK"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                final val = int.tryParse(controller.text.trim());
+                if (val == null || val < 1 || val > maxQty) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    SnackBar(content: Text("Enter a valid quantity (1-$maxQty)")),
+                  );
+                  return;
+                }
+                setState(() {
+                  cancelledItems[kotId] ??= {};
+                  cancelledItems[kotId]![itemCode] = val;
+                });
+                Navigator.of(ctx).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _cancelSelected() async {
+    final tableName = selectedTable?.tableName ?? "";
+    // Cancel full KOTs
+    for (String kotId in selectedKOTIds) {
+      await widget.cancelkot(kotId);
+      final kotItems = allItems.where((item) => item.orderNumber == kotId).toList();
+      final kotMods = allMods.where((mod) => mod.kotId.kotId.toString() == kotId).toList();
+
+      List<SelectedProduct> products = kotItems.map((item) => SelectedProduct(
+        name: item.itemName ?? "",
+        price: item.price ?? 0,
+        quantity: item.quantity ?? 0,
+        code: item.itemCode.toString(),
+        notes: item.orderNumber.toString(),
+        costCenterCode: item.costCenterCode.toString(),
+      )).toList();
+
+      List<SelectedProductModifier> modifiers = kotMods.map((mod) => SelectedProductModifier(
+        code: mod.productCode.toString(),
+        quantity: mod.quantity ?? 0,
+        name: mod.name,
+        price_per_unit: double.tryParse(mod.pricePerUnit) ?? 0.0,
+        product_code: mod.productCode.toString(),
+        order_id: mod.kotId.kotId,
+      )).toList();
+
+      await widget.printKOTWithHeading(
+        heading: "CANCELLED KOT",
+        kotno: kotId,
+        items: products,
+        modifiers: modifiers,
+        tableno: tableName,
+      );
+    }
+
+    // Cancel selected items/quantities
+    for (final kotEntry in cancelledItems.entries) {
+      final kotId = kotEntry.key;
+      for (final entry in kotEntry.value.entries) {
+        final itemCode = entry.key;
+        final qty = entry.value;
+        await widget.cancelItem(kotId, itemCode, qty);
+
+        final itemList = allItems.where((item) =>
+        item.orderNumber == kotId && item.itemCode.toString() == itemCode
+        );
+        final OrderItem? item = itemList.isNotEmpty ? itemList.first : null;
+        if (item != null) {
+          final itemMods = allMods.where((mod) =>
+          mod.kotId.kotId.toString() == kotId &&
+              mod.productCode.toString() == itemCode
+          ).toList();
+          List<SelectedProduct> products = [
+            SelectedProduct(
+              name: item.itemName ?? "",
+              price: item.price ?? 0,
+              quantity: qty,
+              code: item.itemCode.toString(),
+              notes: item.orderNumber.toString(),
+              costCenterCode: item.costCenterCode.toString(),
+            )
+          ];
+          List<SelectedProductModifier> modifiers = itemMods.map((mod) => SelectedProductModifier(
+            code: mod.productCode.toString(),
+            quantity: mod.quantity ?? 0,
+            name: mod.name,
+            price_per_unit: double.tryParse(mod.pricePerUnit) ?? 0.0,
+            product_code: mod.productCode.toString(),
+            order_id: mod.kotId.kotId,
+          )).toList();
+          await widget.printKOTWithHeading(
+            heading: "CANCELLED ITEM",
+            kotno: kotId,
+            items: products,
+            modifiers: modifiers,
+            tableno: tableName,
+          );
+        }
+      }
+    }
+    setState(() {
+      selectedKOTIds.clear();
+      cancelledItems.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Cancellation done!')),
+    );
+    Navigator.of(context).pop();
+  }
+
+  // You can use your buildTableGrid from MoveKotFullScreenOverlay here
+  Widget buildTableGrid(
+      List<TableItem> tables, {
+        String? selectedTableName,
+        void Function(TableItem)? onTapTable,
+      }) {
+    final Map<String, List<TableItem>> sectioned = groupBy(tables, (t) => t.area ?? "Area");
+    Widget buildSectionHeader(String section) => Padding(
+      padding: const EdgeInsets.only(top: 14, left: 6, bottom: 8),
+      child: Text(
+        section,
+        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.grey[700]),
+      ),
+    );
+    Widget buildTableCard(TableItem table) {
+      final isSelected = selectedTableName == table.tableName;
+      final isOccupied = table.status == "Occupied";
+      Color bgColor = Colors.white;
+      Color borderColor = Colors.grey[400]!;
+      Color textColor = Colors.grey[700]!;
+      if (isOccupied) {
+        bgColor = Color(0xFFFFF5F4);
+        borderColor = Color(0xFFD5282A);
+        textColor = Color(0xFFD5282A);
+      }
+      return GestureDetector(
+        onTap: onTapTable != null ? () => onTapTable(table) : null,
+        child: Container(
+          decoration: BoxDecoration(
+            color: bgColor,
+            border: Border.all(
+              color: isSelected ? Colors.red : borderColor,
+              width: isSelected ? 1.5 : 1,
+            ),
+            borderRadius: BorderRadius.circular(13),
+          ),
+          padding: EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+          child: Center(
+            child: RichText(
+              text: TextSpan(
+                text: 'Table ',
+                style: TextStyle(
+                  color: textColor,
+                  fontWeight: FontWeight.w400,
+                  fontSize: 16,
+                ),
+                children: [
+                  TextSpan(
+                    text: table.tableName,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 19,
+                      color: textColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return ListView(
+      children: [
+        for (final section in sectioned.keys)
+          ...[
+            buildSectionHeader(section),
+            GridView.count(
+              shrinkWrap: true,
+              physics: NeverScrollableScrollPhysics(),
+              crossAxisCount: 4,
+              childAspectRatio: 1.1,
+              crossAxisSpacing: 18,
+              mainAxisSpacing: 18,
+              children: sectioned[section]!.map(buildTableCard).toList(),
+            ),
+          ]
+      ],
+    );
+  }
+
+  Widget buildKotCard(Kot kot) {
+    final kotId = kot.kotId.toString();
+    bool isSelected = selectedKOTIds.contains(kotId);
+    final itemsInKot = allItems.where((item) => item.orderNumber == kotId).toList();
+
+    return Card(
+      elevation: 4,
+      margin: EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: isSelected
+            ? BorderSide(color: Colors.red, width: 2)
+            : BorderSide(color: Colors.grey[300]!, width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Checkbox(
+                  value: isSelected,
+                  activeColor: Colors.red,
+                  onChanged: (checked) {
+                    setState(() {
+                      if (checked == true) {
+                        selectedKOTIds.add(kotId);
+                      } else {
+                        selectedKOTIds.remove(kotId);
+                      }
+                    });
+                  },
+                ),
+                SizedBox(width: 6),
+                Text(
+                  'KOT ${kot.kotId}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                    color: isSelected ? Colors.red : Colors.black,
+                  ),
+                ),
+                SizedBox(width: 18),
+                Icon(Icons.access_time, size: 17, color: Colors.grey[600]),
+                SizedBox(width: 3),
+                Text('${kot.orderTime}', style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+              ],
+            ),
+            SizedBox(height: 10),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: NeverScrollableScrollPhysics(),
+                itemCount: itemsInKot.length,
+                separatorBuilder: (_, __) => Divider(height: 1),
+                itemBuilder: (ctx, idx) {
+                  final item = itemsInKot[idx];
+                  final cancelledQty = cancelledItems[kotId]?[item.itemCode.toString()] ?? 0;
+                  final remainingQty = (item.quantity ?? 0) - cancelledQty;
+                  return ListTile(
+                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.red[50],
+                      child: Text(
+                        item.itemName != null && item.itemName!.isNotEmpty ? item.itemName![0] : '',
+                        style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    title: Text(item.itemName ?? "",
+                        style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
+                    subtitle: Row(
+                      children: [
+                        Text("Qty: $remainingQty", style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+                        SizedBox(width: 12),
+                        Text("Rate: ${item.price}",
+                            style: TextStyle(fontSize: 13, color: Colors.blueGrey)),
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (remainingQty > 0)
+                          Tooltip(
+                            message: "Cancel part/all qty",
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.red,
+                                side: BorderSide(color: Colors.red),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              icon: Icon(Icons.edit, color: Colors.red),
+                              label: Text("Cancel Qty", style: TextStyle(fontSize: 13)),
+                              onPressed: () {
+                                _showQtyDialog(
+                                  kotId: kotId,
+                                  itemCode: item.itemCode.toString(),
+                                  maxQty: remainingQty,
+                                  itemName: item.itemName ?? "",
+                                );
+                              },
+                            ),
+                          ),
+                        if (cancelledQty > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Chip(
+                              label: Text("To Cancel: $cancelledQty", style: TextStyle(color: Colors.white)),
+                              backgroundColor: Colors.red,
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: Text('Cancel KOT / Item', style: TextStyle(color: Colors.red[800])),
+        backgroundColor: Colors.white,
+        iconTheme: IconThemeData(color: Colors.red),
+        leading: IconButton(
+          icon: Icon(Icons.close, color: Colors.red[800]),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        elevation: 2,
+      ),
+      body: isLoadingTables
+          ? Center(child: CircularProgressIndicator())
+          : Row(
+        children: [
+          // LEFT: KOTs and items for selected table
+          Expanded(
+            flex: 2,
+            child: isLoadingKots
+                ? Center(child: CircularProgressIndicator())
+                : ListView(
+              padding: EdgeInsets.only(top: 10, bottom: 0),
+              children: tableKots.map(buildKotCard).toList(),
+            ),
+          ),
+          // RIGHT: Table grid
+          Expanded(
+            flex: 1,
+            child: Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(12.0),
+              child: buildTableGrid(
+                allTables,
+                selectedTableName: selectedTable?.tableName,
+                onTapTable: (t) async {
+                  setState(() {
+                    selectedTable = t;
+                  });
+                  await _loadKotsItems(t.tableName);
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        color: Colors.white,
+        child: ElevatedButton.icon(
+          icon: Icon(Icons.delete, color: Colors.white),
+          label: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14.0),
+            child: Text('Cancel Selected', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.red[700],
+            minimumSize: Size(double.infinity, 54),
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+          onPressed: selectedKOTIds.isEmpty && cancelledItems.isEmpty
+              ? null
+              : _cancelSelected,
+        ),
+      ),
+    );
+  }
+}
+
+
+
+
+class MoveTableFullScreenOverlay extends StatefulWidget {
+  final Future<List<TableItem>> Function() fetchAllTables;
+  final Future<List<Kot>> Function(String) fetchKotsForTable;
+  final Future<List<OrderItem>> Function(String tableName) fetchKotItemsLatest;
+  final Future<List<OrderModifier>> Function(String tableName) fetchKotModifiersLatest;
+  final Future<void> Function({
+  required String heading,
+  required String kotno,
+  required List<SelectedProduct> items,
+  required List<SelectedProductModifier> modifiers,
+  required String tableno,
+  String? moveTableName,
+  }) printKOTWithHeading;
+  final Future<bool> Function(BuildContext context, String existingTableNo, String newTableNo, String db) moveTableApi;
+  final String currentTableName;
+  final String db;
+  final String waiterName;
+  final String ccName;
+  final String brandName;
+  final String username;
+
+  const MoveTableFullScreenOverlay({
+    super.key,
+    required this.fetchAllTables,
+    required this.fetchKotsForTable,
+    required this.fetchKotItemsLatest,
+    required this.fetchKotModifiersLatest,
+    required this.printKOTWithHeading,
+    required this.moveTableApi,
+    required this.currentTableName,
+    required this.db,
+    required this.waiterName,
+    required this.ccName,
+    required this.brandName,
+    required this.username,
+  });
+
+  @override
+  State<MoveTableFullScreenOverlay> createState() => _MoveTableFullScreenOverlayState();
+}
+
+class _MoveTableFullScreenOverlayState extends State<MoveTableFullScreenOverlay> {
+  List<TableItem> allTables = [];
+  TableItem? selectedDestTable;
+  List<Kot> sourceKots = [];
+  List<OrderItem> allItems = [];
+  List<OrderModifier> allMods = [];
+  bool isLoading = true;
+  bool isMoving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    setState(() => isLoading = true);
+    allTables = await widget.fetchAllTables();
+    sourceKots = await widget.fetchKotsForTable(widget.currentTableName);
+    allItems = await widget.fetchKotItemsLatest(widget.currentTableName);
+    allMods = await widget.fetchKotModifiersLatest(widget.currentTableName);
+    setState(() => isLoading = false);
+  }
+
+  Widget buildTableGrid(
+      List<TableItem> tables, {
+        String? selectedTableName,
+        void Function(TableItem)? onTapTable,
+      }) {
+    final Map<String, List<TableItem>> sectioned = groupBy(tables, (t) => t.area ?? "Area");
+    Widget buildSectionHeader(String section) => Padding(
+      padding: const EdgeInsets.only(top: 14, left: 6, bottom: 8),
+      child: Text(
+        section,
+        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.grey[700]),
+      ),
+    );
+    Widget buildTableCard(TableItem table) {
+      final isSelected = selectedDestTable?.tableName == table.tableName;
+      final isOccupied = table.status == "Occupied";
+      Color bgColor = Colors.white;
+      Color borderColor = Colors.grey[400]!;
+      Color textColor = Colors.grey[700]!;
+      if (isOccupied) {
+        bgColor = Color(0xFFFFF5F4);
+        borderColor = Color(0xFFD5282A);
+        textColor = Color(0xFFD5282A);
+      }
+      final isDisabled = table.tableName == widget.currentTableName;
+      return GestureDetector(
+        onTap: onTapTable != null && !isDisabled ? () => onTapTable(table) : null,
+        child: Opacity(
+          opacity: isDisabled ? 0.3 : 1,
+          child: Container(
+            decoration: BoxDecoration(
+              color: bgColor,
+              border: Border.all(
+                color: isSelected ? Colors.green : borderColor,
+                width: isSelected ? 1.5 : 1,
+              ),
+              borderRadius: BorderRadius.circular(13),
+            ),
+            padding: EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+            child: Center(
+              child: RichText(
+                text: TextSpan(
+                  text: 'Table ',
+                  style: TextStyle(
+                    color: textColor,
+                    fontWeight: FontWeight.w400,
+                    fontSize: 16,
+                  ),
+                  children: [
+                    TextSpan(
+                      text: table.tableName,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 19,
+                        color: textColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return ListView(
+      children: [
+        for (final section in sectioned.keys)
+          ...[
+            buildSectionHeader(section),
+            GridView.count(
+              shrinkWrap: true,
+              physics: NeverScrollableScrollPhysics(),
+              crossAxisCount: 4,
+              childAspectRatio: 1.1,
+              crossAxisSpacing: 18,
+              mainAxisSpacing: 18,
+              children: sectioned[section]!.map(buildTableCard).toList(),
+            ),
+          ]
+      ],
+    );
+  }
+
+  Widget buildKOTCard(Kot kot) {
+    final kotItems = allItems.where((item) => item.orderNumber == kot.kotId.toString()).toList();
+    final kotMods = allMods.where((mod) => mod.kotId.kotId.toString() == kot.kotId.toString()).toList();
+
+    return Card(
+      elevation: 4,
+      margin: EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: Colors.grey[300]!, width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'KOT ${kot.kotId}',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+                color: Colors.green[700],
+              ),
+            ),
+            SizedBox(height: 5),
+            Text('Time: ${kot.orderTime}', style: TextStyle(fontSize: 14, color: Colors.grey[700])),
+            SizedBox(height: 14),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: NeverScrollableScrollPhysics(),
+                itemCount: kotItems.length,
+                separatorBuilder: (_, __) => Divider(height: 1),
+                itemBuilder: (ctx, idx) {
+                  final item = kotItems[idx];
+                  return ListTile(
+                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.green[50],
+                      child: Text(
+                        item.itemName != null && item.itemName!.isNotEmpty ? item.itemName![0] : '',
+                        style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    title: Text(item.itemName ?? "",
+                        style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16)),
+                    subtitle: Row(
+                      children: [
+                        Text("Qty: ${item.quantity}", style: TextStyle(fontSize: 13, color: Colors.grey[700])),
+                        SizedBox(width: 12),
+                        Text("Rate: ${item.price}", style: TextStyle(fontSize: 13, color: Colors.blueGrey)),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            if (kotMods.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 12.0, top: 6),
+                child: Text("Modifiers: " + kotMods.map((m) => m.name).join(", "),
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _moveTable() async {
+    if (selectedDestTable == null) return;
+    setState(() => isMoving = true);
+    for (final kot in sourceKots) {
+      final kotItems = allItems.where((item) => item.orderNumber == kot.kotId.toString()).toList();
+      final kotMods = allMods.where((mod) => mod.kotId.kotId.toString() == kot.kotId.toString()).toList();
+      List<SelectedProduct> products = kotItems.map((item) => SelectedProduct(
+        name: item.itemName ?? "",
+        price: item.price ?? 0,
+        quantity: item.quantity ?? 0,
+        code: item.itemCode.toString(),
+        notes: item.orderNumber.toString(),
+        costCenterCode: item.costCenterCode.toString(),
+      )).toList();
+      List<SelectedProductModifier> modifiers = kotMods.map((mod) => SelectedProductModifier(
+        code: mod.productCode.toString(),
+        quantity: mod.quantity ?? 0,
+        name: mod.name,
+        price_per_unit: double.tryParse(mod.pricePerUnit) ?? 0.0,
+        product_code: mod.productCode.toString(),
+        order_id: mod.kotId.kotId,
+      )).toList();
+
+      await widget.printKOTWithHeading(
+        heading: "Table moved to ${selectedDestTable!.tableName}",
+        kotno: kot.kotId.toString(),
+        items: products,
+        modifiers: modifiers,
+        tableno: selectedDestTable!.tableName,
+        moveTableName: selectedDestTable!.tableName,
+      );
+    }
+    bool success = await widget.moveTableApi(
+      context,
+      widget.currentTableName,
+      selectedDestTable!.tableName,
+      widget.db,
+    );
+    setState(() => isMoving = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(success ? 'Table moved!' : 'Move failed')),
+    );
+    Navigator.of(context).pop();
+    // You can also trigger navigation back to main menu or refresh, as needed
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: Text("Move Table", style: TextStyle(color: Colors.green[900])),
+        backgroundColor: Colors.white,
+        leading: IconButton(
+          icon: Icon(Icons.close, color: Colors.red[800]),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        elevation: 2,
+      ),
+      body: isLoading
+          ? Center(child: CircularProgressIndicator())
+          : Row(
+        children: [
+          // LEFT: Preview all KOTs from source table (always expanded)
+          Expanded(
+            flex: 2,
+            child: ListView(
+              padding: EdgeInsets.only(top: 10, bottom: 0),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 8),
+                  child: Text(
+                    "KOTs for Table ${widget.currentTableName}",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.green[900]),
+                  ),
+                ),
+                ...sourceKots.map(buildKOTCard),
+              ],
+            ),
+          ),
+          // RIGHT: Table grid (destination)
+          Expanded(
+            flex: 1,
+            child: Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(12.0),
+              child: buildTableGrid(
+                allTables.where((t) => t.tableName != widget.currentTableName).toList(),
+                selectedTableName: selectedDestTable?.tableName,
+                onTapTable: (t) {
+                  setState(() {
+                    selectedDestTable = t;
+                  });
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+        color: Colors.white,
+        child: ElevatedButton.icon(
+          icon: isMoving
+              ? SizedBox(width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white))
+              : Icon(Icons.swap_horiz, color: Colors.white),
+          label: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14.0),
+            child: Text('Move Table', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.green[700],
+            minimumSize: Size(double.infinity, 54),
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+          onPressed: (selectedDestTable == null || isMoving)
+              ? null
+              : _moveTable,
+        ),
+      ),
+    );
+  }
+}
+
+Widget buildTableGrid(
+    List<TableItem> tables, {
+      String? selectedTableName,
+      void Function(TableItem)? onTapTable,
+    }) {
+  final Map<String, List<TableItem>> sectioned = groupBy(tables, (t) => t.area);
+
+  Widget buildSectionHeader(String section) => Padding(
+    padding: const EdgeInsets.only(top: 14, left: 6, bottom: 8),
+    child: Text(
+      section,
+      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.grey[700]),
+    ),
+  );
+
+  Widget buildTableCard(TableItem table) {
+    final isSelected = selectedTableName == table.tableName;
+    final isOccupied = table.status == "Occupied";
+
+    Color bgColor = Colors.white;
+    Color borderColor = Colors.grey[400]!;
+    Color textColor = Colors.grey[700]!;
+
+    if (isOccupied) {
+      bgColor = Color(0xFFFFF5F4);         // light red fill
+      borderColor = Color(0xFFD5282A);  // little darker red for border
+      textColor = Color(0xFFD5282A);    // dark red text
+    }
+
+    return GestureDetector(
+      onTap: onTapTable != null ? () => onTapTable(table) : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: bgColor,
+          border: Border.all(
+            color: isSelected ? Colors.red : borderColor,
+            width: isSelected ? 1 : 1,
+          ),
+          borderRadius: BorderRadius.circular(13),
+        ),
+        padding: EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        child: Center(
+          child: RichText(
+            text: TextSpan(
+              text: 'Table ',
+              style: TextStyle(
+                color: textColor,
+                fontWeight: FontWeight.w400,
+                fontSize: 16,
+              ),
+              children: [
+                TextSpan(
+                  text: table.tableName,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 19,
+                    color: textColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  return ListView(
+    children: [
+      for (final section in sectioned.keys)
+        ...[
+          buildSectionHeader(section),
+          GridView.count(
+            shrinkWrap: true,
+            physics: NeverScrollableScrollPhysics(),
+            crossAxisCount: 4,
+            childAspectRatio: 1.1,
+            crossAxisSpacing: 18,
+            mainAxisSpacing: 18,
+            children: sectioned[section]!.map(buildTableCard).toList(),
+          ),
+        ]
+    ],
+  );
+}
+
