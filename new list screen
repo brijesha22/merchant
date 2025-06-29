@@ -5,10 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_sample/category_model.dart';
 import 'package:flutter_sample/pricing_modal.dart';
 import 'package:flutter_sample/product_model.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'FireConstants.dart';
 import 'OrderModifier.dart';
 import 'Order_Item_model.dart';
-import 'Tax_model.dart';
+import 'package:flutter_sample/Tax_model.dart';
 import 'busy_table_screen.dart';
 import 'global_constatnts.dart';
 import 'kot_model.dart';
@@ -22,10 +23,8 @@ import 'package:flutter/material.dart' hide Image;
 import 'package:intl/intl.dart';
 import 'Costcenter_model.dart';
 import 'NativeBridge.dart';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-// --- MODEL CLASSES ---
 
 class SelectedProduct {
   final String name;
@@ -62,6 +61,24 @@ class SelectedProduct {
     this.billItemId,
   });
 
+  factory SelectedProduct.fromJson(Map<String, dynamic> json) => SelectedProduct(
+    name: json['itemName'] ?? json['name'] ?? "",
+    code: json['itemCode'] ?? json['code'] ?? "",
+    price: (json['price'] ?? 0).toDouble(),
+    quantity: json['quantity'] ?? 1,
+    status: json['status'] ?? "active",
+    notes: json['notes'] ?? "",
+    costCenterCode: json['costCenterCode'] ?? "",
+    isComp: json['isComp'] ?? false,
+    pricebckp: (json['pricebckp'] ?? 0.0).toDouble(),
+    groupCode: json['groupCode'],
+    subcategoryCode: json['subcategoryCode'],
+    totalTaxPercent: (json['totalTaxPercent'] ?? 0.0).toDouble(),
+
+    waiter: json['waiter'],
+    billItemId: json['billItemId'],
+  );
+
   Map<String, dynamic> toJson() {
     return {
       "orderNumber": 1,
@@ -80,7 +97,6 @@ class SelectedProduct {
     };
   }
 }
-
 class SelectedProductModifier {
   final String name;
   final String code;
@@ -98,6 +114,15 @@ class SelectedProductModifier {
     this.quantity = 1,
   });
 
+  factory SelectedProductModifier.fromJson(Map<String, dynamic> json) => SelectedProductModifier(
+    name: json['name'],
+    code: json['code'],
+    price_per_unit: (json['price_per_unit'] ?? 0.0).toDouble(),
+    product_code: json['product_code'] ?? "",
+    order_id: json['order_id'] ?? "",
+    quantity: json['quantity'] ?? 1,
+  );
+
   Map<String, dynamic> toJson() {
     return {
       "orderNumber": 1,
@@ -110,8 +135,42 @@ class SelectedProductModifier {
     };
   }
 }
+class CartOrder {
+  final int id;
+  final List<SelectedProduct> products;
+  final List<SelectedProductModifier> modifiers;
+  final DateTime savedAt;
+  final String orderType;
 
-// --- MAIN APP ---
+  CartOrder({
+    required this.id,
+    required this.products,
+    required this.modifiers,
+    required this.savedAt,
+    required this.orderType,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'products': products.map((e) => e.toJson()).toList(),
+    'modifiers': modifiers.map((e) => e.toJson()).toList(),
+    'savedAt': savedAt.toIso8601String(),
+    'orderType': orderType,
+  };
+
+  static CartOrder fromJson(Map<String, dynamic> json) => CartOrder(
+    id: json['id'],
+    products: (json['products'] as List)
+        .map((e) => SelectedProduct.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    modifiers: (json['modifiers'] as List)
+        .map((e) => SelectedProductModifier.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    savedAt: DateTime.parse(json['savedAt']),
+    orderType: json['orderType'] ?? "",
+  );
+}
+
 void main() => runApp(const MyAppList());
 
 class MyAppList extends StatefulWidget {
@@ -140,12 +199,75 @@ class _MyAppListState extends State<MyAppList> {
   bool isLoadingKOT = false;
   bool didFetchKOT = false;
   String? currentTableName;
-
+  List<CartOrder> savedCartOrders = [];
+  int cartOrderId = 1;
+  String? lastPosDate;
+  List<SelectedProduct> cartProducts = [];
+  List<SelectedProductModifier> cartModifiers = [];
   @override
   void initState() {
     super.initState();
     futureCostcenters = fetchCostcenters(); // <-- Correct place!
-    // Any other init code...
+    lastPosDate = posdate;
+    _loadCartOrders();
+  }
+  void _loadCartOrders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cartString = prefs.getString('saved_cart_orders');
+    final cartPosDate = prefs.getString('cart_posdate');
+    if (cartString != null && cartPosDate == posdate) {
+      final decoded = jsonDecode(cartString) as List;
+      setState(() {
+        savedCartOrders = decoded.map((e) => CartOrder.fromJson(e)).toList();
+        cartOrderId = savedCartOrders.isEmpty
+            ? 1
+            : (savedCartOrders.map((e) => e.id).reduce((v, e) => v > e ? v : e) + 1);
+      });
+    } else {
+      // Clear if posdate changed
+      await prefs.remove('saved_cart_orders');
+      await prefs.setString('cart_posdate', posdate);
+      setState(() {
+        savedCartOrders = [];
+        cartOrderId = 1;
+      });
+    }
+  }
+  void _saveCartOrders() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('saved_cart_orders',
+        jsonEncode(savedCartOrders.map((e) => e.toJson()).toList()));
+    await prefs.setString('cart_posdate', posdate);
+  }
+
+  void _showCartOverlay(BuildContext context) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (ctx) => CartFullScreenOverlay(
+          orders: savedCartOrders,
+          currentOrderType: Lastclickedmodule ?? "",
+          onRestoreOrder: _restoreCartOrder,
+          onDeleteOrder: _deleteCartOrder,
+        ),
+      ),
+    );
+  }
+  void _deleteCartOrder(CartOrder order) {
+    setState(() {
+      savedCartOrders.remove(order);
+    });
+    _saveCartOrders();
+  }
+
+  void _restoreCartOrder(CartOrder order, BuildContext context) {
+    setState(() {
+      selectedProducts = List<SelectedProduct>.from(order.products);
+      selectedModifiers = List<SelectedProductModifier>.from(order.modifiers);
+      // Use current Lastclickedmodule as the restored type
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Order restored as $Lastclickedmodule')));
+    Navigator.of(context).pop();
   }
 
   Future<List<OrderItem>> fetchKotItemsLatest(String tablenumber) async {
@@ -293,6 +415,67 @@ class _MyAppListState extends State<MyAppList> {
 
     setState(() => isLoadingKOT = false);
   }
+
+  Widget _SimpleModuleButton({required String label, required bool selected, required VoidCallback onTap}) {
+    return TextButton(
+      style: TextButton.styleFrom(
+        padding: EdgeInsets.symmetric(horizontal: 2, vertical: 0),
+        minimumSize: Size(0, 0),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: selected ? Color(0xffc00716) : Colors.black87,
+        textStyle: TextStyle(
+          fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          fontSize: 16,
+        ),
+      ),
+      onPressed: onTap,
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+        decoration: selected
+            ? BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: Color(0xffc00716),
+              width: 2,
+            ),
+          ),
+        )
+            : null,
+        child: Text(label),
+      ),
+    );
+  }
+  Widget _SquareModuleButton({required String label, required bool selected, required VoidCallback onTap}) {
+    return Container(
+      margin: EdgeInsets.symmetric(horizontal: 3),
+      child: Material(
+        color: selected ? Color(0xffc00716) : Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: BorderSide(
+            color: selected ? Color(0xffc00716) : Color(0xffa9a9a9),
+            width: 1.5,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Container(
+            padding: EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: selected ? Colors.white : Colors.black87,
+                fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
     myStrings = ModalRoute.of(context)?.settings.arguments as Map<String, String>? ?? {};
@@ -313,11 +496,102 @@ class _MyAppListState extends State<MyAppList> {
           SafeArea(
             child: Column(
               children: [
-                // Main Row: Category | Product | KOT
+                // --- TOP ROW: Back, Search, Modules, Cart ---
+                Container(
+                  width: double.infinity,
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 10),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: Icon(Icons.arrow_back, color: Color(0xffc00716)),
+                        onPressed: () => Navigator.of(context).pop(),
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(),
+                      ),
+                      SizedBox(
+                        width: 270,
+                        child: TextField(
+                          controller: _searchController,
+                          onChanged: (v) => setState(() => whattofollow = "s"),
+                          style: TextStyle(fontSize: 14),
+                          decoration: InputDecoration(
+                            hintText: 'Search for food...',
+                            prefixIcon: Icon(Icons.search, size: 18),
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: Color(0xd5282b), width: 2),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: Color(0xFFD5282A), width: 2),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: Color(0xFFD5282A), width: 2),
+                            ),
+                            contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      Spacer(),
+                      _SquareModuleButton(
+                        label: 'Take Away',
+                        selected: Lastclickedmodule == 'Take Away',
+                        onTap: () {
+                          Lastclickedmodule = 'Take Away';
+                          Navigator.pushNamed(context, '/itemlist', arguments: takeawayStrings);
+                        },
+                      ),
+                      _SquareModuleButton(
+                        label: 'Home Delivery',
+                        selected: Lastclickedmodule == 'Home Delivery',
+                        onTap: () {
+                          Lastclickedmodule = 'Home Delivery';
+                          Navigator.pushNamed(context, '/itemlist', arguments: homedeliveryStrings);
+                        },
+                      ),
+                      _SquareModuleButton(
+                        label: 'Counter',
+                        selected: Lastclickedmodule == 'Counter',
+                        onTap: () {
+                          Lastclickedmodule = 'Counter';
+                          Navigator.pushNamed(context, '/itemlist', arguments: counterStrings);
+                        },
+                      ),
+                      _SquareModuleButton(
+                        label: 'Dine',
+                        selected: Lastclickedmodule == 'Dine',
+                        onTap: () {
+                          Lastclickedmodule = 'Dine';
+                          Navigator.push(context, MaterialPageRoute(builder: (ctx) => MainMenuDesk()));
+                        },
+                      ),
+                      _SquareModuleButton(
+                        label: 'Online Order',
+                        selected: Lastclickedmodule == 'Online Order',
+                        onTap: () {
+                          Lastclickedmodule = 'Online Order';
+                          Navigator.pushNamed(context, '/onlineorderslist', arguments: homedeliveryStrings);
+                        },
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.shopping_cart, color: Colors.red[700], size: 40),
+                        onPressed: () => _showCartOverlay(context),
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(),
+                      ),
+                    ],
+                  ),
+                ),
+                // --- Main Row: Category | Product | KOT ---
                 Expanded(
                   child: Row(
                     children: [
-                      // --- LEFT: Category panel ---
+                      // --- LEFT: Category panel, plain text, no square, with thin divider, selected is block fill/light red ---
                       Container(
                         width: 180,
                         color: Colors.white,
@@ -328,22 +602,14 @@ class _MyAppListState extends State<MyAppList> {
                               return Center(child: CircularProgressIndicator());
                             }
                             final categories = snapshot.data!;
-                            return ListView(
-                              children: [
-                                IconButton(
-                                  icon: Icon(Icons.arrow_back, color: Color(0xffc00716)),
-                                  onPressed: () => Navigator.of(context).pop(),
-                                ),
-                                ...categories.map((cat) {
-                                  final isSel = selectedCategoryCode == cat.categoryCode;
-                                  return ListTile(
-                                    selected: isSel,
-                                    selectedTileColor: Color(0xffc00716).withOpacity(0.1),
-                                    title: Text(cat.categoryName,
-                                        style: TextStyle(
-                                          color: isSel ? Color(0xffc00716) : Colors.black,
-                                          fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
-                                        )),
+                            return Column(
+                              mainAxisAlignment: MainAxisAlignment.start,
+                              children: categories.map((cat) {
+                                final isSel = selectedCategoryCode == cat.categoryCode;
+                                return Container(
+                                  margin: EdgeInsets.only(top: 0, bottom: 4), // minimal vertical space
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.zero,
                                     onTap: () {
                                       setState(() {
                                         selectedCategoryCode = cat.categoryCode;
@@ -351,227 +617,248 @@ class _MyAppListState extends State<MyAppList> {
                                         whattofollow = "c";
                                       });
                                     },
-                                  );
-                                }).toList(),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                      // --- CENTER: Search, subcat, grid ---
-                      Expanded(
-                        child: Column(
-                          children: [
-                            // Top Row: Search left, Cart right
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              child: Row(
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 16),
-                                    child: SizedBox(
-                                      width: 290,
-                                      child: TextField(
-                                        controller: _searchController,
-                                        onChanged: (v) => setState(() => whattofollow = "s"),
-                                        decoration: InputDecoration(
-                                          hintText: 'Search for food...',
-                                          prefixIcon: Icon(Icons.search),
-                                          filled: true,
-                                          fillColor: Colors.white,
-                                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                                          contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+                                    child: Container(
+                                      height: 36,
+                                      width: double.infinity,
+                                      decoration: BoxDecoration(
+                                        color: isSel ? Color(0xffffe7e7) : Colors.white,
+                                        border: Border(
+                                          left: BorderSide(
+                                            color: isSel ? Color(0xffc00716) : Colors.transparent,
+                                            width: 4,
+                                          ),
+                                          bottom: BorderSide(
+                                            color: Colors.black12,
+                                            width: 0.7,
+                                          ),
+                                        ),
+                                      ),
+                                      alignment: Alignment.centerLeft,
+                                      padding: EdgeInsets.only(left: 18),
+                                      child: Text(
+                                        cat.categoryName,
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          color: isSel ? Color(0xffc00716) : Colors.black87,
+                                          fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                          letterSpacing: 0.2,
                                         ),
                                       ),
                                     ),
                                   ),
-                                  Spacer(),
-                                  IconButton(
-                                    icon: Icon(Icons.shopping_cart, color: Colors.red[700], size: 32),
-                                    onPressed: () {
-                                      // Your cart logic here
-                                      // e.g. openCartOverlay();
-                                    },
-                                  ),
-                                  SizedBox(width: 32),
-                                ],
-                              ),
+                                );
+                              }).toList(),
+                            );
+                          },
+                        ),
+                      ),
+                      // --- CENTER: Product grid in thin bordered container ---
+                      Expanded(
+                        child: Container(
+                          margin: EdgeInsets.only(top: 0, bottom: 0),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: Border(
+                              left: BorderSide(color: Colors.black26, width: 0.7), // very thin border as per your red mark
+                              top: BorderSide(color: Colors.black26, width: 0.7),
+                              bottom: BorderSide(color: Colors.black26, width: 0.7),
+                              right: BorderSide(color: Colors.black26, width: 0.7),  // <-- add right border
                             ),
-                            // Subcategory horizontal if main category selected
-                            if (selectedCategoryCode != null)
-                              Container(
-                                height: 48,
-                                margin: EdgeInsets.only(left: 10),
-                                child: FutureBuilder<List<Category>>(
-                                  future: screenWidth > screenHeight ? futureCategoryWindows : futureCategory,
-                                  builder: (context, snapshot) {
-                                    if (!snapshot.hasData || snapshot.data!.isEmpty) return SizedBox();
-                                    final cats = snapshot.data!;
-                                    final subcats = cats.where((c) =>
-                                    c.categoryCode == selectedCategoryCode &&
-                                        c.subcategoryCode != null &&
-                                        c.subcategoryName != null &&
-                                        c.subcategoryName!.isNotEmpty
-                                    ).toList();
-                                    if (subcats.isEmpty) return SizedBox();
-                                    return ListView(
-                                      scrollDirection: Axis.horizontal,
-                                      children: subcats.map((sub) {
-                                        final isSel = selectedSubcategoryCode == sub.subcategoryCode;
-                                        return Padding(
-                                          padding: const EdgeInsets.only(right: 8.0),
-                                          child: ChoiceChip(
-                                            selected: isSel,
-                                            label: Text(sub.subcategoryName!),
-                                            selectedColor: Color(0xffc00716),
-                                            labelStyle: TextStyle(color: isSel ? Colors.white : Colors.black),
-                                            onSelected: (_) {
+                          ),
+                          child: Column(
+                            children: [
+                              // Subcategory horizontal (optionally, you can style this as plain text buttons too)
+                              if (selectedCategoryCode != null)
+                                Container(
+                                  height: 48,
+                                  padding: EdgeInsets.only(left: 12, top: 7, bottom: 7),
+                                  color: Colors.white,
+                                  alignment: Alignment.centerLeft,
+                                  child: FutureBuilder<List<Category>>(
+                                    future: screenWidth > screenHeight ? futureCategoryWindows : futureCategory,
+                                    builder: (context, snapshot) {
+                                      if (!snapshot.hasData || snapshot.data!.isEmpty) return SizedBox();
+                                      final cats = snapshot.data!;
+                                      final subcats = cats.where((c) =>
+                                      c.categoryCode == selectedCategoryCode &&
+                                          c.subcategoryCode != null &&
+                                          c.subcategoryName != null &&
+                                          c.subcategoryName!.isNotEmpty
+                                      ).toList();
+                                      if (subcats.isEmpty) return SizedBox();
+                                      return ListView(
+                                        scrollDirection: Axis.horizontal,
+                                        children: subcats.map((sub) {
+                                          final isSel = selectedSubcategoryCode == sub.subcategoryCode;
+                                          return InkWell(
+                                            borderRadius: BorderRadius.zero,
+                                            onTap: () {
                                               setState(() {
                                                 selectedSubcategoryCode = sub.subcategoryCode;
                                                 whattofollow = "sc";
                                               });
                                             },
+                                            child: Container(
+                                              height: 32,
+                                              alignment: Alignment.center,
+                                              margin: EdgeInsets.only(right: 10),
+                                              padding: EdgeInsets.symmetric(horizontal: 18),
+                                              decoration: BoxDecoration(
+                                                color: isSel ? Color(0xffffe7e7) : Colors.white,
+                                                border: Border(
+                                                  left: BorderSide(
+                                                    color: isSel ? Color(0xffc00716) : Colors.transparent,
+                                                    width: 3,
+                                                  ),
+                                                  bottom: BorderSide(
+                                                    color: Colors.black12,
+                                                    width: 0.7,
+                                                  ),
+                                                ),
+                                              ),
+                                              child: Text(
+                                                sub.subcategoryName!,
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  color: isSel ? Color(0xffc00716) : Colors.black87,
+                                                  fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        }).toList(),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              // --- PRODUCT GRID (unchanged) ---
+                              Expanded(
+                                child: FutureBuilder<List<Pricing>>(
+                                  future: fetchPricing(),
+                                  builder: (context, pricingSnapshot) {
+                                    if (!pricingSnapshot.hasData || pricingSnapshot.data!.isEmpty) {
+                                      return Center(child: CircularProgressIndicator());
+                                    }
+                                    final pricingData = pricingSnapshot.data!;
+                                    return FutureBuilder<List<Product>>(
+                                      future: futurePostWindows,
+                                      builder: (context, snapshot) {
+                                        if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                                          return Center(child: Text("No products available"));
+                                        }
+                                        List<Product> allProducts = snapshot.data!;
+                                        List<Product> filteredProducts;
+                                        if (_searchController.text.trim().isNotEmpty) {
+                                          filteredProducts = allProducts.where((p) =>
+                                              p.productName.toLowerCase().contains(_searchController.text.toLowerCase())).toList();
+                                        } else if (selectedSubcategoryCode != null) {
+                                          filteredProducts = allProducts.where((p) =>
+                                          p.categoryCode == selectedCategoryCode &&
+                                              p.subcategoryCode == selectedSubcategoryCode).toList();
+                                        } else if (selectedCategoryCode != null) {
+                                          filteredProducts = allProducts.where((p) =>
+                                          p.categoryCode == selectedCategoryCode).toList();
+                                        } else {
+                                          filteredProducts = allProducts;
+                                        }
+                                        return GridView.builder(
+                                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                            crossAxisCount: 7,
+                                            childAspectRatio: 1.1,
+                                            crossAxisSpacing: 8,
+                                            mainAxisSpacing: 8,
                                           ),
+                                          itemCount: filteredProducts.length,
+                                          itemBuilder: (context, index) {
+                                            final product = filteredProducts[index];
+                                            String area = myStrings['area'] ?? '';
+                                            String lastClickedModule = Lastclickedmodule ?? '';
+                                            Pricing? pricing = pricingData.firstWhere(
+                                                  (p) =>
+                                              p.itemCode == product.productCode.toString() &&
+                                                  (p.area == area || p.area == lastClickedModule),
+                                              orElse: () => Pricing(
+                                                id: 0,
+                                                status: false,
+                                                itemName: product.productName,
+                                                itemCode: product.productCode.toString(),
+                                                price: 0,
+                                                area: area,
+                                              ),
+                                            );
+                                            double price = pricing.price > 0 ? pricing.price : 0;
+                                            final isVeg = product.dietary?.toLowerCase() == 'veg';
+                                            return GestureDetector(
+                                              onTap: () {
+                                                final selProduct = selectedProducts.firstWhere(
+                                                      (p) => p.code == product.productCode.toString(),
+                                                  orElse: () => SelectedProduct(
+                                                      name: '',
+                                                      code: '',
+                                                      price: 0,
+                                                      quantity: 0,
+                                                      costCenterCode: '',
+                                                      taxes: null
+                                                  ),
+                                                );
+                                                int newQty = selProduct.name.isNotEmpty ? selProduct.quantity + 1 : 1;
+                                                addToSelectedProducts(
+                                                    product.productName,
+                                                    price,
+                                                    newQty,
+                                                    product.productCode.toString(),
+                                                    product.costcenterCode.toString(),
+                                                    product.groupCode,
+                                                    product.subcategoryCode,
+                                                    product.taxes,
+                                                    product
+                                                );
+                                              },
+                                              child: Container(
+                                                decoration: BoxDecoration(
+                                                  border: Border.all(
+                                                    color: isVeg ? Colors.green : Colors.red,
+                                                    width: 1,
+                                                  ),
+                                                  borderRadius: BorderRadius.circular(10),
+                                                  color: Colors.white,
+                                                ),
+                                                margin: EdgeInsets.all(1),
+                                                padding: EdgeInsets.all(8),
+                                                child: Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: [
+                                                    Text(product.productName, maxLines: 2, overflow: TextOverflow.ellipsis,
+                                                        style: TextStyle(fontWeight: FontWeight.w600)),
+                                                    SizedBox(height: 4),
+                                                    Text('₹${price.toStringAsFixed(2)}',
+                                                        style: TextStyle(
+                                                            color: isVeg ? Colors.green : Colors.red,
+                                                            fontWeight: FontWeight.bold)),
+                                                  ],
+                                                ),
+                                              ),
+                                            );
+                                          },
                                         );
-                                      }).toList(),
+                                      },
                                     );
                                   },
                                 ),
                               ),
-                            // --- PRODUCT GRID ---
-                            Expanded(
-                              child: FutureBuilder<List<Pricing>>(
-                                future: fetchPricing(),
-                                builder: (context, pricingSnapshot) {
-                                  if (!pricingSnapshot.hasData || pricingSnapshot.data!.isEmpty) {
-                                    return Center(child: CircularProgressIndicator());
-                                  }
-                                  final pricingData = pricingSnapshot.data!;
-                                  return FutureBuilder<List<Product>>(
-                                    future: futurePostWindows,
-                                    builder: (context, snapshot) {
-                                      if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                                        return Center(child: Text("No products available"));
-                                      }
-                                      List<Product> allProducts = snapshot.data!;
-                                      List<Product> filteredProducts;
-                                      if (_searchController.text.trim().isNotEmpty) {
-                                        filteredProducts = allProducts.where((p) =>
-                                            p.productName.toLowerCase().contains(_searchController.text.toLowerCase())).toList();
-                                      } else if (selectedSubcategoryCode != null) {
-                                        filteredProducts = allProducts.where((p) =>
-                                        p.categoryCode == selectedCategoryCode &&
-                                            p.subcategoryCode == selectedSubcategoryCode).toList();
-                                      } else if (selectedCategoryCode != null) {
-                                        filteredProducts = allProducts.where((p) =>
-                                        p.categoryCode == selectedCategoryCode).toList();
-                                      } else {
-                                        filteredProducts = allProducts;
-                                      }
-                                      return GridView.builder(
-                                        padding: EdgeInsets.all(16),
-                                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                          crossAxisCount: 5,
-                                          childAspectRatio: 1.1,
-                                          crossAxisSpacing: 16,
-                                          mainAxisSpacing: 16,
-                                        ),
-                                        itemCount: filteredProducts.length,
-                                        itemBuilder: (context, index) {
-                                          final product = filteredProducts[index];
-                                          // --- AREA WISE PRICING LOGIC ---
-                                          String area = myStrings['area'] ?? '';
-                                          String lastClickedModule = Lastclickedmodule ?? '';
-                                          Pricing? pricing = pricingData.firstWhere(
-                                                (p) =>
-                                            p.itemCode == product.productCode.toString() &&
-                                                (p.area == area || p.area == lastClickedModule),
-                                            orElse: () => Pricing(
-                                              id: 0,
-                                              status: false,
-                                              itemName: product.productName,
-                                              itemCode: product.productCode.toString(),
-                                              price: 0,
-                                              area: area,
-                                            ),
-                                          );
-                                          double price = pricing.price > 0 ? pricing.price : 0;
-                                          final isVeg = product.dietary?.toLowerCase() == 'veg';
-                                          return GestureDetector(
-                                            onTap: () {
-                                              final selProduct = selectedProducts.firstWhere(
-                                                    (p) => p.code == product.productCode.toString(),
-                                                orElse: () => SelectedProduct(
-                                                    name: '',
-                                                    code: '',
-                                                    price: 0,
-                                                    quantity: 0,
-                                                    costCenterCode: '',
-                                                    taxes: null
-                                                ),
-                                              );
-                                              int newQty = selProduct.name.isNotEmpty ? selProduct.quantity + 1 : 1;
-                                              addToSelectedProducts(
-                                                  product.productName,
-                                                  price,
-                                                  newQty,
-                                                  product.productCode.toString(),
-                                                  product.costcenterCode.toString(),
-                                                  product.groupCode,
-                                                  product.subcategoryCode,
-                                                  product.taxes,
-                                                  product
-                                              );
-                                            },
-                                            child: Container(
-                                              decoration: BoxDecoration(
-                                                border: Border.all(
-                                                  color: isVeg ? Colors.green : Colors.red,
-                                                  width: 2,
-                                                ),
-                                                borderRadius: BorderRadius.circular(10),
-                                                color: Colors.white,
-                                              ),
-                                              margin: EdgeInsets.all(4),
-                                              padding: EdgeInsets.all(8),
-                                              child: Column(
-                                                mainAxisAlignment: MainAxisAlignment.center,
-                                                children: [
-                                                  Text(product.productName, maxLines: 2, overflow: TextOverflow.ellipsis,
-                                                      style: TextStyle(fontWeight: FontWeight.w600)),
-                                                  SizedBox(height: 4),
-                                                  Text('₹${price.toStringAsFixed(2)}',
-                                                      style: TextStyle(
-                                                          color: isVeg ? Colors.green : Colors.red,
-                                                          fontWeight: FontWeight.bold)),
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      );
-                                    },
-                                  );
-                                },
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                      // --- RIGHT: Selected Items List ---
+                      // --- RIGHT: Selected Items List (unchanged except: removed "Items Selected"/"New Items to Order" text) ---
                       Container(
                         width: 350,
                         color: Colors.white,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            SizedBox(height: 18),
-                            Center(
-                              child: Text(
-                                '${selectedProducts.length} Items Selected',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
-                              ),
-                            ),
+                            SizedBox(height: 0),
                             Divider(thickness: 1),
                             Padding(
                               padding: const EdgeInsets.all(8.0),
@@ -585,40 +872,29 @@ class _MyAppListState extends State<MyAppList> {
                               ]),
                             ),
                             Divider(thickness: 1),
-
-                            // --- KOT LIST: half height, scrollable ---
                             if (isLoadingKOT)
                               Center(child: CircularProgressIndicator())
                             else if (existingKOTProducts.isNotEmpty)
                               Container(
-                                height: 270, // about half panel, adjust as needed
-                                child:_KotExpansionList(
-                                  kotProducts: existingKOTProducts,
-                                  kotModifiers: existingKOTModifiers,
-                                  selectedKOTIds: selectedKOTIds,
-                                  onKOTCheckboxChanged: (kotNo, checked) {
-                                    setState(() {
-                                      if (checked) {
-                                        selectedKOTIds.add(kotNo);
-                                      } else {
-                                        selectedKOTIds.remove(kotNo);
-                                      }
-                                    });
-                                  },
-                                )
+                                  height: 270,
+                                  child:_KotExpansionList(
+                                    kotProducts: existingKOTProducts,
+                                    kotModifiers: existingKOTModifiers,
+                                    selectedKOTIds: selectedKOTIds,
+                                    onKOTCheckboxChanged: (kotNo, checked) {
+                                      setState(() {
+                                        if (checked) {
+                                          selectedKOTIds.add(kotNo);
+                                        } else {
+                                          selectedKOTIds.remove(kotNo);
+                                        }
+                                      });
+                                    },
+                                  )
                               ),
                             if (existingKOTProducts.isNotEmpty)
                               Divider(thickness: 1),
-
-                            // --- NEWLY SELECTED ITEMS (can also be made scrollable if needed) ---
                             if (selectedProducts.isNotEmpty) ...[
-                              Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                                child: Text(
-                                  'New Items to Order',
-                                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 16),
-                                ),
-                              ),
                               Expanded(
                                 child: ListView.builder(
                                   shrinkWrap: true,
@@ -696,8 +972,6 @@ class _MyAppListState extends State<MyAppList> {
                               ),
                               Divider(thickness: 1),
                             ],
-
-                            // --- TOTALS & CONTINUE BUTTON ---
                             Padding(
                               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                               child: Column(
@@ -742,88 +1016,107 @@ class _MyAppListState extends State<MyAppList> {
                             ),
                           ],
                         ),
-                      )
+                      ),
                     ],
                   ),
                 ),
-                // --- FOOTER ROW: Under category panel and product grid area only ---
-                // At the bottom of your main Column (not inside any Row):
-                Container(
-                  color: Colors.white,
-                  height: 36,
-                  width: double.infinity,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      SizedBox(width: 180), // This matches the width of your category panel
-
-                      _PlainFooterButton(
-                        label: 'Move KOT / Item',
-                        onTap: () async {
-                          Navigator.of(context).push(MaterialPageRoute(
-                            builder: (ctx) => MoveKotOrItemFullScreenOverlay(
-                              fetchAllTables: () => fetchAllTables(CLIENTCODE),
-                              fetchKotsForTable: fetchKots,
-                              fetchKotItemsLatest: fetchKotItemsLatest,
-                              fetchKotModifiersLatest: fetchKotModifiersLatest,
-                              moveKotApi: moveKot,
-                              moveItemApi: moveItem,
-                              printKOTWithHeading: printKOTWithHeading,
-                            ),
-                          ));
-                        },
-                      ),
-                      _PlainFooterButton(
-                        label: 'Cancel KOT / Item',
-                        onTap: () async {
-                          Navigator.of(context).push(MaterialPageRoute(
-                            builder: (ctx) => CancelKotOrItemFullScreenOverlay(
-                              fetchAllTables: () => fetchAllTables(CLIENTCODE),
-                              fetchKotsForTable: fetchKots,
-                              fetchKotItemsLatest: fetchKotItemsLatest,
-                              fetchKotModifiersLatest: fetchKotModifiersLatest,
-                              printKOTWithHeading: printKOTWithHeading,
-                              cancelkot: cancelkot,
-                              cancelItem: (kotId, itemCode, qty) async {
-                                // Use your logic here
-                                final tableNo = int.tryParse(currentTableName!) ?? 0;
-                                await cancelItem(kotId, itemCode, tableNo, qty);
-                              },
-                            ),
-                          ));
-                        },
-                      ),
-
-                      _PlainFooterButton(
-                          label: 'Move Table',
-                          onTap: () async {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (ctx) => MoveTableFullScreenOverlay(
-                                  fetchAllTables: () => fetchAllTables(CLIENTCODE),
-                                  fetchKotsForTable: fetchKots,
-                                  fetchKotItemsLatest: fetchKotItemsLatest,
-                                  fetchKotModifiersLatest: fetchKotModifiersLatest,
-                                  printKOTWithHeading: printKOTWithHeading,
-                                  moveTableApi: moveTable, // your function: Future<bool> moveTable(BuildContext, String existingTableNo, String newTableNo, String db)
-                                  currentTableName: currentTableName!, // The source table
-                                  db: CLIENTCODE,
-                                  waiterName: selectedwaitername,
-                                  ccName: ccname,
-                                  brandName: brandName,
-                                  username: username,
-                                ),
-                              ),
-                            );
-                          }
-                      ),
-                      // Optionally, add Expanded(child: Container()) to push buttons to left
-                    ],
-                  ),
-                )
               ],
             ),
           ),
+          // --- FOOTER: Absolutely positioned at bottom, full width ---
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              // Use white with opacity for transparent effect (not grey)
+              color: Colors.grey.withOpacity(0.5),
+              height: 66,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.start,
+                children: [
+                  _PlainFooterButton(
+                    label: 'Move KOT / Item',
+                    onTap: () async {
+                      Navigator.of(context).push(MaterialPageRoute(
+                        builder: (ctx) => MoveKotOrItemFullScreenOverlay(
+                          fetchAllTables: () => fetchAllTables(CLIENTCODE),
+                          fetchKotsForTable: fetchKots,
+                          fetchKotItemsLatest: fetchKotItemsLatest,
+                          fetchKotModifiersLatest: fetchKotModifiersLatest,
+                          moveKotApi: moveKot,
+                          moveItemApi: moveItem,
+                          printKOTWithHeading: printKOTWithHeading,
+                        ),
+                      ));
+                    },
+                  ),
+                  _PlainFooterButton(
+                    label: 'Cancel KOT / Item',
+                    onTap: () async {
+                      Navigator.of(context).push(MaterialPageRoute(
+                        builder: (ctx) => CancelKotOrItemFullScreenOverlay(
+                          fetchAllTables: () => fetchAllTables(CLIENTCODE),
+                          fetchKotsForTable: fetchKots,
+                          fetchKotItemsLatest: fetchKotItemsLatest,
+                          fetchKotModifiersLatest: fetchKotModifiersLatest,
+                          printKOTWithHeading: printKOTWithHeading,
+                          cancelkot: cancelkot,
+                          cancelItem: (kotId, itemCode, qty) async {
+                            final tableNo = int.tryParse(currentTableName!) ?? 0;
+                            await cancelItem(kotId, itemCode, tableNo, qty);
+                          },
+                        ),
+                      ));
+                    },
+                  ),
+                  _PlainFooterButton(
+                    label: 'Move Table',
+                    onTap: () async {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (ctx) => MoveTableFullScreenOverlay(
+                            fetchAllTables: () => fetchAllTables(CLIENTCODE),
+                            fetchKotsForTable: fetchKots,
+                            fetchKotItemsLatest: fetchKotItemsLatest,
+                            fetchKotModifiersLatest: fetchKotModifiersLatest,
+                            printKOTWithHeading: printKOTWithHeading,
+                            moveTableApi: moveTable,
+                            currentTableName: currentTableName!,
+                            db: CLIENTCODE,
+                            waiterName: selectedwaitername,
+                            ccName: ccname,
+                            brandName: brandName,
+                            username: username,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  _PlainFooterButton(
+                    label: 'Add to Cart',
+                    onTap: () {
+                      if (selectedProducts.isEmpty) return;
+                      final order = CartOrder(
+                        id: cartOrderId++,
+                        products: List<SelectedProduct>.from(selectedProducts),
+                        modifiers: List<SelectedProductModifier>.from(selectedModifiers),
+                        savedAt: DateTime.now(),
+                        orderType: Lastclickedmodule ?? "",
+                      );
+                      setState(() {
+                        savedCartOrders.add(order);
+                        selectedProducts.clear();
+                        selectedModifiers.clear();
+                      });
+                      _saveCartOrders();
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Order added to cart!')));
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),          // --- Overlays (if needed) ---
           if (showAddon && _addonSelectedProduct != null)
             AddonDialogOverlay(
               product: _addonSelectedProduct!,
@@ -840,20 +1133,21 @@ class _MyAppListState extends State<MyAppList> {
         ],
       ),
     );
+
+
   }
   final String apirl = '${apiUrl}order/create?DB=' + CLIENTCODE;
 
   late String gKOTNO;
 
   Future<void>postData(BuildContext context, List<SelectedProductModifier> sms,
-      List<SelectedProduct> sps, Map<String, String> tableinfo)
-  async {
+      List<SelectedProduct> sps, Map<String, String> tableinfo) async {
     double screenWidth = MediaQuery.of(context).size.width;
     double screenHeight = MediaQuery.of(context).size.height;
 
-    // Use selectedwaitername for waiter information
+
     for (SelectedProduct product in sps) {
-      product.waiter = selectedwaitername;  // Assign selectedwaitername to waiter field
+      product.waiter = selectedwaitername;
     }
 
     final orderItems = sps.map((product) => product.toJson()).toList();
@@ -1085,17 +1379,12 @@ class _MyAppListState extends State<MyAppList> {
       throw Exception('Failed to place order');
     }
   }
-
-
   String capitalizeWords(String input) {
     return input.split(' ').map((word) {
       if (word.isEmpty) return word;
       return word[0].toUpperCase() + word.substring(1).toLowerCase();
     }).join(' ');
   }
-
-
-
   Future<void> printTicket(List<int> ticket, String targetip) async {
     final printer = PrinterNetworkManager(targetip);
     PosPrintResult connect = await printer.connect();
@@ -1106,11 +1395,9 @@ class _MyAppListState extends State<MyAppList> {
       printer.disconnect();
     }
   }
-
   Future<List<int>> testKOT(String kotno, List<SelectedProduct> items,
       List<SelectedProductModifier> modifiers, String tableno, {bool isGrouped = false, String? consolidatedPrinterIp})
-  async
-  {
+  async {
     final profile = await CapabilityProfile.load();
     final generator = Generator(PaperSize.mm80, profile);
     List<int> bytes = [];
@@ -2303,7 +2590,6 @@ class _KotExpansionListState extends State<_KotExpansionList> {
     );
   }
 }
-
 class AddonDialogOverlay extends StatelessWidget {
   final SelectedProduct product;
   final List<SelectedProductModifier> selectedModifiers;
@@ -2532,7 +2818,6 @@ class AddonDialogOverlay extends StatelessWidget {
     );
   }
 }
-
 class MoveKotOrItemFullScreenOverlay extends StatefulWidget {
   final Future<List<TableItem>> Function() fetchAllTables;
   final Future<List<Kot>> Function(String) fetchKotsForTable;
@@ -2563,8 +2848,6 @@ class MoveKotOrItemFullScreenOverlay extends StatefulWidget {
   @override
   State<MoveKotOrItemFullScreenOverlay> createState() => _MoveKotOrItemFullScreenOverlayState();
 }
-
-
 class _MoveKotOrItemFullScreenOverlayState extends State<MoveKotOrItemFullScreenOverlay> {
   List<TableItem> allTables = [];
   TableItem? selectedSourceTable;
@@ -3074,7 +3357,6 @@ class CancelKotOrItemFullScreenOverlay extends StatefulWidget {
   @override
   State<CancelKotOrItemFullScreenOverlay> createState() => _CancelKotOrItemFullScreenOverlayState();
 }
-
 class _CancelKotOrItemFullScreenOverlayState extends State<CancelKotOrItemFullScreenOverlay> {
   List<TableItem> allTables = [];
   TableItem? selectedTable;
@@ -3552,10 +3834,6 @@ class _CancelKotOrItemFullScreenOverlayState extends State<CancelKotOrItemFullSc
     );
   }
 }
-
-
-
-
 class MoveTableFullScreenOverlay extends StatefulWidget {
   final Future<List<TableItem>> Function() fetchAllTables;
   final Future<List<Kot>> Function(String) fetchKotsForTable;
@@ -3596,7 +3874,6 @@ class MoveTableFullScreenOverlay extends StatefulWidget {
   @override
   State<MoveTableFullScreenOverlay> createState() => _MoveTableFullScreenOverlayState();
 }
-
 class _MoveTableFullScreenOverlayState extends State<MoveTableFullScreenOverlay> {
   List<TableItem> allTables = [];
   TableItem? selectedDestTable;
@@ -3907,7 +4184,6 @@ class _MoveTableFullScreenOverlayState extends State<MoveTableFullScreenOverlay>
     );
   }
 }
-
 Widget buildTableGrid(
     List<TableItem> tables, {
       String? selectedTableName,
@@ -3993,4 +4269,215 @@ Widget buildTableGrid(
     ],
   );
 }
+class CartData {
+  List<SelectedProduct> products;
+  List<SelectedProductModifier> modifiers;
+  CartData({required this.products, required this.modifiers});
 
+  Map<String, dynamic> toJson() => {
+    'products': products.map((e) => e.toJson()).toList(),
+    'modifiers': modifiers.map((e) => e.toJson()).toList(),
+  };
+
+  static CartData fromJson(Map<String, dynamic> json) => CartData(
+    products: (json['products'] as List)
+        .map((e) => SelectedProduct.fromJson(e))
+        .toList(),
+    modifiers: (json['modifiers'] as List)
+        .map((e) => SelectedProductModifier.fromJson(e))
+        .toList(),
+  );
+}
+class CartOrdersDialog extends StatelessWidget {
+  final List<CartOrder> orders;
+  final void Function(CartOrder) onRestoreOrder;
+  final void Function(CartOrder) onDeleteOrder;
+
+  const CartOrdersDialog({
+    required this.orders,
+    required this.onRestoreOrder,
+    required this.onDeleteOrder,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Saved Cart Orders'),
+      content: SizedBox(
+        width: 400,
+        height: 400,
+        child: orders.isEmpty
+            ? Center(child: Text('No saved orders'))
+            : ListView(
+          children: orders.map((order) => ExpansionTile(
+            title: Text('Order ${order.id} (${order.products.length} items)'),
+            subtitle: Text('Saved: ${order.savedAt.hour}:${order.savedAt.minute}'),
+            children: [
+              ...order.products.map((p) => ListTile(
+                title: Text(p.name),
+                trailing: Text('x${p.quantity}'),
+                subtitle: Text('₹${p.price.toStringAsFixed(2)}'),
+              )),
+              Row(
+                children: [
+                  TextButton(
+                    child: Text('Restore'),
+                    onPressed: () => onRestoreOrder(order),
+                  ),
+                  TextButton(
+                    child: Text('Delete', style: TextStyle(color: Colors.red)),
+                    onPressed: () => onDeleteOrder(order),
+                  ),
+                ],
+              )
+            ],
+          )).toList(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          child: Text('Close'),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ],
+    );
+  }
+}
+class CartFullScreenOverlay extends StatelessWidget {
+  final List<CartOrder> orders;
+  final String currentOrderType;
+  final void Function(CartOrder, BuildContext) onRestoreOrder;
+  final void Function(CartOrder) onDeleteOrder;
+
+  const CartFullScreenOverlay({
+    required this.orders,
+    required this.currentOrderType,
+    required this.onRestoreOrder,
+    required this.onDeleteOrder,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.grey[100],
+      appBar: AppBar(
+        title: Text('Cart Orders (${orders.length})'),
+        backgroundColor: Colors.red[800],
+        actions: [
+          IconButton(icon: Icon(Icons.close), onPressed: () => Navigator.of(context).pop())
+        ],
+      ),
+      body: orders.isEmpty
+          ? Center(child: Text('No saved orders', style: TextStyle(fontSize: 22)))
+          : ListView.builder(
+          padding: EdgeInsets.all(18),
+          itemCount: orders.length,
+          itemBuilder: (context, idx) {
+            final order = orders[idx];
+            final total = order.products.fold<double>(
+              0,
+                  (sum, p) => sum + (p.price * p.quantity),
+            );
+            return Card(
+              elevation: 3,
+              margin: EdgeInsets.only(bottom: 18),
+              child: Padding(
+                padding: const EdgeInsets.all(14.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text('Order ${order.id}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        SizedBox(width: 12),
+                        _OrderChip(orderType: order.orderType),
+                        Spacer(),
+                        Text('${order.savedAt.hour.toString().padLeft(2, '0')}:${order.savedAt.minute.toString().padLeft(2, '0')}',
+                            style: TextStyle(color: Colors.grey[600])),
+                      ],
+                    ),
+                    Divider(),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: order.products
+                          .map((p) => Chip(
+                        label: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(p.name, style: TextStyle(fontWeight: FontWeight.w500)),
+                            SizedBox(width: 8),
+                            Text('×${p.quantity}', style: TextStyle(fontWeight: FontWeight.bold)),
+                            SizedBox(width: 8),
+                            Text('₹${(p.price * p.quantity).toStringAsFixed(2)}',
+                                style: TextStyle(color: Colors.green[700])),
+                          ],
+                        ),
+                        backgroundColor: Colors.grey[200],
+                      ))
+                          .toList(),
+                    ),
+                    SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('Total: ₹${total.toStringAsFixed(2)}',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                        Row(
+                          children: [
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue[700],
+                                foregroundColor: Colors.white,
+                              ),
+                              onPressed: () => onRestoreOrder(order, context),
+                              icon: Icon(Icons.restore),
+                              label: Text('Restore as $currentOrderType'),
+                            ),
+                            SizedBox(width: 8),
+                            TextButton.icon(
+                              style: TextButton.styleFrom(foregroundColor: Colors.red[800]),
+                              onPressed: () => onDeleteOrder(order),
+                              icon: Icon(Icons.delete),
+                              label: Text('Delete'),
+                            ),
+                          ],
+                        )
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+    );
+  }
+}
+class _OrderChip extends StatelessWidget {
+  final String orderType;
+  const _OrderChip({required this.orderType});
+  @override
+  Widget build(BuildContext context) {
+    Color color;
+    switch (orderType.toLowerCase()) {
+      case "counter":
+        color = Colors.blue;
+        break;
+      case "take away":
+        color = Colors.orange;
+        break;
+      case "dine":
+        color = Colors.green;
+        break;
+      default:
+        color = Colors.grey;
+    }
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(18)),
+      child: Text(orderType, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+    );
+  }
+}
